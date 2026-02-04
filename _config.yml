@@ -1,4 +1,4 @@
-title: Sprout
+title: Sprout Technical Spec
 description: A flexible multitenancy package for Laravel, providing tenant identification, resolution, and lifecycle management.
 
 # Repository info (used by some themes)
