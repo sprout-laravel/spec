@@ -226,11 +226,6 @@ class Domain extends Model
         'ssl_provisioned',
         'ssl_expires_at',
     ];
-    
-    public function tenant(): BelongsTo
-    {
-        return $this->belongsTo(Tenant::class, 'tenant_key', 'key');
-    }
 }
 ```
 
