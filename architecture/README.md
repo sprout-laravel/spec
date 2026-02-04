@@ -14,7 +14,7 @@ and implementation details that make up the system.
 | [Overview](./overview.md)                      | High-level architecture and design principles | Complete |
 | [Resolution Hooks](./resolution-hooks.md)      | When and how tenant resolution occurs         | Complete |
 | [Identity Resolvers](./identity-resolvers.md)  | Extracting tenant identity from requests      | Complete |
-| [Tenancy Lifecycle](./tenancy-lifecycle.md)    | Events and listeners during tenant activation | Stub     |
+| [Tenancy Lifecycle](./tenancy-lifecycle.md)    | Events and listeners during tenant activation | Complete |
 | [Service Overrides](./service-overrides.md)    | Making Laravel services tenant-aware          | Stub     |
 
 ### Component Documentation
