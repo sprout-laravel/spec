@@ -10,7 +10,7 @@ Technical documentation describing how Sprout works internally. This includes co
 explanations of core concepts.
 
 - [Overview](./architecture/overview.md) — High-level architecture and design principles
-- [Resolution Hooks](./architecture/resolution-hooks.md') — How and when Sprout resolves tenant identities
+- [Resolution Hooks](./architecture/resolution-hooks.md) — How and when Sprout resolves tenant identities
 - [Tenancy Lifecycle](./architecture/tenancy-lifecycle.md) — How tenants are identified, resolved, and managed
 - [Service Overrides](./architecture/service-overrides.md) — How Sprout integrates with Laravel's service container
 - [Components](./architecture/components/) — Detailed documentation for each component (Core, Bud, Seedling, Canopy)
