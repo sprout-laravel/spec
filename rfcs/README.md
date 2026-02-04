@@ -34,8 +34,10 @@ You don't need an RFC for:
 
 ## Index
 
-| RFC                        | Title    | Status | Created |
-|----------------------------|----------|--------|---------|
-| [0000](./0000-template.md) | Template | —      | —       |
+| RFC                        | Title                               | Status | Created    |
+|----------------------------|-------------------------------------|--------|------------|
+| [0000](./0000-template.md) | Template                            | —      | —          |
+| [0001](./0001-seedling.md) | Seedling - Multi-database Support   | Draft  | 2026-02-04 |
+| [0002](./0002-canopy.md)   | Canopy - Domain, DNS and SSL Suport | Draft  | 2026-02-04 |
 
 <!-- Add new RFCs above this line -->
