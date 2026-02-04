@@ -9,29 +9,39 @@ Sprout supports multiple resolution hooks to accommodate different identificatio
 subdomain or path) can resolve very early, while others (like session) require Laravel services that aren't available
 until later in the lifecycle.
 
-```mermaid
-flowchart TD
-    A[Request] --> B[Route Matching]
-    B --> C{RouteMatched Event}
-    C --> D{Routing Hook<br/>enabled?}
-    D -->|Yes| E[IdentifyTenantOnRouting<br/>attempts resolution]
-    D -->|No| F[Middleware Stack]
-    E --> F
-    F --> G{Middleware Hook<br/>enabled?}
-    G -->|Yes| H[SproutTenantContextMiddleware<br/>attempts resolution]
-    G -->|No| I{Tenant<br/>resolved?}
-    H --> I
-    I -->|Yes| J[Controller / Action]
-    I -->|No| K[NoTenantFoundException]
-    style E fill: #e1f5fe
-    style H fill: #e1f5fe
-    style K fill: #ffcdd2
 ```
-
-**Hook timing:**
-
-- **Routing Hook** — Route and parameters available. Best for most resolvers.
-- **Middleware Hook** — Sessions and auth available. Required for session resolver. Enforces tenant requirement.
+Request
+   │
+   ▼
+┌─────────────────────────┐
+│     Route Matching      │
+└───────────┬─────────────┘
+            │
+            ▼
+┌─────────────────────────┐
+│   RouteMatched Event    │
+│   ┌───────────────────┐ │
+│   │   Routing Hook    │ │  ← Route and parameters available
+│   │   (if enabled)    │ │    Best for most resolvers
+│   └───────────────────┘ │
+└───────────┬─────────────┘
+            │
+            ▼
+┌─────────────────────────┐
+│      Middleware         │
+│   ┌───────────────────┐ │
+│   │ Middleware Hook   │ │  ← Sessions, auth available
+│   │ (if enabled)      │ │    Required for session resolver
+│   └───────────────────┘ │
+│                         │
+│   Tenant required here  │  ← Exception if no tenant
+└───────────┬─────────────┘
+            │
+            ▼
+┌─────────────────────────┐
+│    Controller/Action    │
+└─────────────────────────┘
+```
 
 ## Available Hooks
 
