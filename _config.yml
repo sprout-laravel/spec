@@ -1,0 +1,34 @@
+title: Sprout
+description: A flexible multitenancy package for Laravel, providing tenant identification, resolution, and lifecycle management.
+
+# Repository info (used by some themes)
+repository: ollieread/sprout-spec
+
+# Author/org info
+author:
+  name: Ollie Read
+  url: https://ollieread.com
+
+# Optional: disable the download buttons if you don't want them
+show_downloads: false
+
+# SEO/social
+url: https://spec.sproutforlaravel.com  # adjust to your actual custom domain
+baseurl: ""
+
+# Open Graph / social sharing
+logo: /assets/sprout-og-image.png  # if you have one
+social:
+  name: Ollie Read
+  links:
+    - https://github.com/ollieread
+    - https://ollieread.com
+
+# Additional metadata
+keywords:
+  - laravel
+  - multitenancy
+  - php
+  - sprout
+  - tenant
+  - saas
