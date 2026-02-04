@@ -1,5 +1,3 @@
-# Sprout Specification
-
 This repository contains the technical specification, architecture documentation, and design decisions for Sprout.
 
 ## Contents
