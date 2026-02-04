@@ -1,525 +1,371 @@
 # Identity Resolvers
 
-This document specifies how identity resolvers extract tenant identifiers from HTTP requests.
+Identity resolvers extract tenant identifiers from HTTP requests. They examine some part of the request — a subdomain,
+a path segment, a header, a cookie, or session data — and return the identifier string that represents the tenant.
 
-## Overview
+Resolvers are deliberately separated from [tenant providers](./tenant-providers.md). A resolver's only job is to extract an identifier string
+from a request. It knows nothing about how tenants are stored or loaded. This separation means the same resolver works
+regardless of whether tenants live in Eloquent, a database table, or an external API. And the same provider works
+regardless of whether the identifier came from a subdomain, a header, or a cookie.
 
-Identity resolvers determine which tenant a request belongs to by examining request data and extracting an identifier.
-This identifier is passed to a tenant provider, which loads the corresponding tenant entity.
+## Two Categories of Resolvers
 
-### Key Concepts
+Resolvers fall into two categories based on how they interact with routing.
 
-- **Tenant**: An entity representing a distinct customer, organisation, or isolated context within the application.
-  Implements `Sprout\Core\Contracts\Tenant`.
-- **Tenancy**: Manages the current tenant state for a specific tenant type. A tenancy holds the current tenant, the
-  provider used to load it, and the resolver used to identify it. Implements `Sprout\Core\Contracts\Tenancy`.
-- **Tenant Provider**: Responsible for loading tenant entities from storage (database, cache, etc.) given an identifier
-  or key. See [Tenant Providers](./tenant-providers.md).
-- **Resolution Hook**: A point in the Laravel request lifecycle where resolution can occur (`Routing` or `Middleware`).
-  See [Resolution Hooks](./resolution-hooks.md).
+### Routing Resolvers
 
-### Resolution Flow
+**Subdomain** and **path** resolvers embed the tenant identifier in the URL structure itself.
 
 ```
-Request
-   │
-   ▼
-┌─────────────────────────┐
-│   Identity Resolver     │
-│   extracts identifier   │
-│   (string or null)      │
-└───────────┬─────────────┘
-            │
-            ▼
-┌─────────────────────────┐
-│    Tenant Provider      │
-│    loads tenant entity  │
-└───────────┬─────────────┘
-            │
-            ▼
-┌─────────────────────────┐
-│    Tenancy updated      │
-│    setup() called       │
-└───────────┬─────────────┘
-            │
-            ▼
-    Tenant context active
+https://acme.example.com/dashboard     (subdomain)
+https://example.com/acme/dashboard     (path)
 ```
 
-Resolution is orchestrated by `ResolutionHelper::handleResolution()`, which:
+These resolvers:
 
-1. Checks if the resolver can run at the current hook via `canResolve()`
-2. Calls `resolveFromRoute()` (if parameter-based) or `resolveFromRequest()`
-3. Passes the identifier to the tenancy's provider to load the tenant
-4. Records which resolver and hook were used on the tenancy
-5. Dispatches tenant lifecycle events, triggering `setup()` via `PerformIdentityResolverSetup`
+- Require specific route configuration (domain constraints, path prefixes)
+- Use Laravel route parameters — the identifier is extracted during routing
+- Affect how routes are defined and how URLs are generated
+- Make the tenant visible in the URL, which users can see and bookmark
 
-## Contracts
+When you define a tenanted route group, routing resolvers configure the routes with the appropriate constraints. The
+subdomain resolver adds a domain constraint. The path resolver adds a path prefix. Both register a route parameter
+that captures the tenant identifier.
 
-### IdentityResolver
+Routing resolvers also implement a fallback. If the route parameter isn't available (error pages, routes outside the
+tenanted group, edge cases), they fall back to parsing the request directly — extracting the subdomain from the host
+or the segment from the path. This ensures resolution can still work even when Laravel's routing didn't capture the
+parameter.
 
-**Location:** `Sprout\Core\Contracts\IdentityResolver`
+### Non-Routing Resolvers
 
-The base contract defines five methods:
+**Header**, **cookie**, and **session** resolvers extract identifiers from request metadata rather than the URL.
 
-| Method               | Signature                                                                                     | Purpose                                |
-|----------------------|-----------------------------------------------------------------------------------------------|----------------------------------------|
-| `resolveFromRequest` | `(Request $request, Tenancy $tenancy): ?string`                                               | Extract identifier from request        |
-| `configureRoute`     | `(RouteRegistrar $route, Tenancy $tenancy): void`                                             | Configure route constraints/middleware |
-| `setup`              | `(Tenancy $tenancy, ?Tenant $tenant): void`                                                   | Post-identification actions            |
-| `canResolve`         | `(Request $request, Tenancy $tenancy, ResolutionHook $hook): bool`                            | Whether resolver can run at hook       |
-| `route`              | `(string $name, Tenancy $tenancy, Tenant $tenant, array $parameters, bool $absolute): string` | Generate tenanted URLs                 |
+```
+X-Tenant: acme                         (header)
+Cookie: tenant=acme                    (cookie)
+Session: ['tenant' => 'acme']          (session)
+```
 
-#### Method Details
+These resolvers:
 
-**`resolveFromRequest`**: The primary resolution method. Examines the request and returns a tenant identifier string, or
-`null` if no identifier can be extracted. Returning `null` does not necessarily indicate an error — optional tenancy
-routes may proceed without a tenant.
+- Don't affect route definitions
+- Don't embed the identifier in URLs
+- Are simpler to configure
+- Keep the tenant "invisible" to users (useful for APIs or seamless switching)
 
-**`configureRoute`**: Called by `Route::tenanted()` when defining tenanted route groups. Allows the resolver to add
-domain constraints, path prefixes, middleware, or route parameter patterns. Receives a `RouteRegistrar` for fluent
-configuration.
+Non-routing resolvers examine the request after routing completes. They read the header value, decrypt the cookie, or
+fetch from the session. The URL stays clean, which is sometimes what you want (especially for APIs where tenancy is
+determined by an API key or token).
 
-**`setup`**: Called after tenant identification via the `PerformIdentityResolverSetup` listener. Receives `null` as the
-tenant parameter when no tenant was identified (allowing cleanup). Used to configure URL defaults, queue cookies, update
-session state, or set runtime settings.
+## When Resolution Happens
 
-**`canResolve`**: Determines if resolution should proceed. Called before `resolveFromRequest()`. Should return `false`
-if the resolver cannot operate at the current hook (e.g., session resolver before session middleware) or if the tenancy
-already has a tenant.
+Resolvers declare which resolution hooks they support. Most resolvers work at both hooks (Routing and Middleware), but
+some have constraints.
 
-**`route`**: URL generation helper. Wraps Laravel's `route()` function, allowing resolvers to inject tenant-specific
-parameters (e.g., subdomain, path prefix) into generated URLs.
+The **session resolver** only works at the Middleware hook. Sessions aren't available during routing — the session
+middleware hasn't run yet. The resolver checks this and refuses to resolve at the wrong hook.
 
-### IdentityResolverUsesParameters
+The **cookie resolver** works at both hooks but behaves differently. At the Routing hook, cookies haven't been
+decrypted by Laravel's middleware yet, so the resolver manually decrypts. At the Middleware hook, cookies are already
+decrypted.
 
-**Location:** `Sprout\Core\Contracts\IdentityResolverUsesParameters`
+Before attempting resolution, the system calls `canResolve()` to check if the resolver can run at the current hook.
+This prevents wasted work and confusing errors.
 
-Extended contract for resolvers that extract identifiers from route parameters rather than parsing request data
-directly.
+See [Resolution Hooks](./resolution-hooks.md) for details on when each hook fires.
 
-| Method                  | Signature                                                     | Purpose                                 |
-|-------------------------|---------------------------------------------------------------|-----------------------------------------|
-| `getRouteParameterName` | `(Tenancy $tenancy): string`                                  | Get parameter name for tenancy          |
-| `resolveFromRoute`      | `(Route $route, Tenancy $tenancy, Request $request): ?string` | Extract identifier from route parameter |
+## Setup Actions
 
-When a resolver implements this contract, `ResolutionHelper` checks for the route parameter first. If present, it calls
-`resolveFromRoute()` and removes the parameter from the route (preventing it from appearing in controller method
-signatures). If the parameter is absent, it falls back to `resolveFromRequest()`.
+After a tenant is identified, resolvers perform setup actions. This happens via a listener on the [tenant identification
+event](./tenancy-lifecycle.md).
 
-## Base Implementation
-
-**Location:** `Sprout\Core\Support\BaseIdentityResolver`
-
-Abstract class providing default implementations:
-
-| Method           | Default Behaviour                                                     |
-|------------------|-----------------------------------------------------------------------|
-| `setup`          | No-op                                                                 |
-| `configureRoute` | No-op                                                                 |
-| `canResolve`     | Returns `true` if tenancy not resolved and hook is in supported hooks |
-| `route`          | Delegates to Laravel's `route()` helper                               |
-
-**Traits included:**
-
-- `AwareOfSprout` — Provides `getSprout()` for accessing the Sprout instance
-- `AwareOfApp` — Provides `getApp()` for accessing the Laravel application container
-
-**Constructor:** `__construct(string $name, array $hooks = [])`
-
-- `$name`: Resolver's registered name (used in configuration and placeholders)
-- `$hooks`: Array of `ResolutionHook` cases this resolver supports. Defaults to `[ResolutionHook::Routing]`
-
-## Configuration
-
-Resolvers are configured in the Sprout configuration file under the `resolvers` key:
+**URL defaults.** Routing resolvers register the tenant identifier as a URL default. This means generated URLs
+automatically include the tenant without you specifying it every time:
 
 ```php
-// config/sprout.php
-return [
-    'resolvers' => [
-        'resolver-name' => [
-            'driver' => 'driver-name',  // Required: maps to a registered driver
-            // ... driver-specific options
-        ],
-    ],
-];
+// Without URL defaults, you'd need:
+route('dashboard', ['tenant' => $tenant->identifier]);
+
+// With URL defaults (set by resolver setup):
+route('dashboard');  // tenant parameter filled automatically
 ```
 
-The `driver` key determines which resolver class to instantiate. Built-in drivers are `subdomain`, `path`, `header`,
-`cookie`, and `session`. Custom drivers can be registered via `IdentityResolverManager::register()`.
+**Cookie management.** The cookie resolver queues a cookie containing the tenant identifier. On subsequent requests,
+this cookie identifies the tenant. When the tenant is cleared, the cookie is expired.
 
-### Placeholders
+**Session storage.** The session resolver stores the tenant identifier in the session. Like cookies, this provides
+persistence across requests.
 
-Configuration values that support placeholders use `PlaceholderHelper::replace()` for substitution at runtime:
+**Settings repository.** Path and subdomain resolvers store values in Sprout's settings repository (URL path, URL
+domain). Service overrides and other components read these settings.
 
-| Placeholder  | Replaced With             |
-|--------------|---------------------------|
-| `{tenancy}`  | Tenancy name (lowercase)  |
-| `{resolver}` | Resolver name (lowercase) |
-| `{Tenancy}`  | Tenancy name (ucfirst)    |
-| `{Resolver}` | Resolver name (ucfirst)   |
-| `{TENANCY}`  | Tenancy name (UPPERCASE)  |
-| `{RESOLVER}` | Resolver name (UPPERCASE) |
-
-For route parameter names, `PlaceholderHelper::replaceForParameter()` additionally converts hyphens to underscores for
-Laravel route compatibility.
-
-### Settings Repository
-
-Several resolvers store runtime values in `SettingsRepository` (`Sprout\Core\Support\SettingsRepository`) during
-`setup()`. These settings are used by service overrides and URL generation:
-
-| Setting                          | Set By                    | Purpose                        |
-|----------------------------------|---------------------------|--------------------------------|
-| `SettingsRepository::URL_PATH`   | PathIdentityResolver      | Path prefix for URL generation |
-| `SettingsRepository::URL_DOMAIN` | SubdomainIdentityResolver | Domain for URL generation      |
-
-Access via `$sprout->settings()`.
+Setup also runs when the tenant is cleared (with a null tenant). This allows resolvers to clean up — expire cookies,
+forget session keys, clear URL defaults.
 
 ## Built-in Resolvers
 
-### SubdomainIdentityResolver
+### Subdomain
 
-**Location:** `Sprout\Core\Http\Resolvers\SubdomainIdentityResolver`
+Extracts the identifier from the subdomain portion of the hostname.
 
-Extracts identifier from the subdomain portion of the request hostname.
-
-**Implements:** `IdentityResolverUsesParameters` (via `FindsIdentityInRouteParameter` trait)
-
-**Configuration:**
-
-| Key         | Type   | Required | Default                | Placeholders | Description                          |
-|-------------|--------|----------|------------------------|--------------|--------------------------------------|
-| `domain`    | string | Yes      | —                      | No           | Parent domain (e.g., `example.com`)  |
-| `pattern`   | string | No       | `null`                 | No           | Regex constraint for route parameter |
-| `parameter` | string | No       | `{tenancy}_{resolver}` | Yes          | Route parameter name                 |
-| `hooks`     | array  | No       | `[Routing]`            | No           | Supported resolution hooks           |
-
-**Resolution:**
-
-- `resolveFromRoute()`: Reads identifier from route parameter (trait implementation)
-- `resolveFromRequest()`: Parses `$request->getHost()`, extracts substring before `.{domain}`
-
-**Route configuration:** Calls `$route->domain()` with parameter placeholder and applies pattern constraint if
-configured.
-
-**Setup:** Sets `SettingsRepository::URL_DOMAIN` to the full tenant domain (e.g., `acme.example.com`). Also sets URL
-default for the route parameter via `URL::defaults()`.
-
----
-
-### PathIdentityResolver
-
-**Location:** `Sprout\Core\Http\Resolvers\PathIdentityResolver`
-
-Extracts identifier from a URL path segment.
-
-**Implements:** `IdentityResolverUsesParameters` (via `FindsIdentityInRouteParameter` trait)
-
-**Configuration:**
-
-| Key         | Type   | Required | Default                | Placeholders | Description                             |
-|-------------|--------|----------|------------------------|--------------|-----------------------------------------|
-| `segment`   | int    | No       | `1`                    | No           | Path segment index (1-based, minimum 1) |
-| `pattern`   | string | No       | `null`                 | No           | Regex constraint for route parameter    |
-| `parameter` | string | No       | `{tenancy}_{resolver}` | Yes          | Route parameter name                    |
-| `hooks`     | array  | No       | `[Routing]`            | No           | Supported resolution hooks              |
-
-**Resolution:**
-
-- `resolveFromRoute()`: Reads identifier from route parameter (trait implementation)
-- `resolveFromRequest()`: Calls `$request->segment($segment)`
-
-**Route configuration:** Calls `$route->prefix()` with parameter placeholder and applies pattern constraint if
-configured.
-
-**Setup:** Sets `SettingsRepository::URL_PATH` to the tenant identifier. Also sets URL default for the route parameter
-via `URL::defaults()`.
-
----
-
-### HeaderIdentityResolver
-
-**Location:** `Sprout\Core\Http\Resolvers\HeaderIdentityResolver`
-
-Extracts identifier from an HTTP request header.
-
-**Configuration:**
-
-| Key      | Type   | Required | Default                | Placeholders | Description                |
-|----------|--------|----------|------------------------|--------------|----------------------------|
-| `header` | string | No       | `{Tenancy}-Identifier` | Yes          | Header name                |
-| `hooks`  | array  | No       | `[Routing]`            | No           | Supported resolution hooks |
-
-**Resolution:** Calls `$request->header($headerName)` where `$headerName` has placeholders replaced.
-
-**Route configuration:** Adds `AddTenantHeaderToResponse` middleware, which includes the tenant identifier in response
-headers.
-
-**Setup:** None.
-
----
-
-### CookieIdentityResolver
-
-**Location:** `Sprout\Core\Http\Resolvers\CookieIdentityResolver`
-
-Extracts identifier from an encrypted cookie.
-
-**Configuration:**
-
-| Key       | Type   | Required | Default                | Placeholders | Description                |
-|-----------|--------|----------|------------------------|--------------|----------------------------|
-| `cookie`  | string | No       | `{Tenancy}-Identifier` | Yes          | Cookie name                |
-| `options` | array  | No       | `[]`                   | No           | Cookie creation options    |
-| `hooks`   | array  | No       | `[Routing]`            | No           | Supported resolution hooks |
-
-**Cookie options:** `minutes`, `path`, `domain`, `secure`, `http_only`, `same_site`
-
-**Resolution:**
-
-1. Reads cookie via `$request->cookie($cookieName)`
-2. If at `Routing` hook: manually decrypts using `Encrypter` (cookies not yet decrypted by middleware)
-3. Validates using `CookieValuePrefix::validate()`
-
-**Route configuration:** None.
-
-**Setup:**
-
-- If tenant exists: Queues cookie with identifier via `CookieJar::queue()`
-- If tenant is null: Expires cookie via `CookieJar::expire()`
-
-**Constraint:** Throws `CompatibilityException` if cookie service override is enabled. The override modifies cookie
-behaviour globally, which interferes with this resolver's operation.
-
----
-
-### SessionIdentityResolver
-
-**Location:** `Sprout\Core\Http\Resolvers\SessionIdentityResolver`
-
-Extracts identifier from session storage.
-
-**Configuration:**
-
-| Key       | Type   | Required | Default                  | Placeholders | Description |
-|-----------|--------|----------|--------------------------|--------------|-------------|
-| `session` | string | No       | `multitenancy.{tenancy}` | Yes          | Session key |
-
-**Note:** Does not accept `hooks` configuration. Hardcoded to `ResolutionHook::Middleware` only, as sessions are
-unavailable at earlier hooks.
-
-**Resolution:** Calls `$request->session()->get($sessionKey)` where `$sessionKey` has placeholders replaced.
-
-**Route configuration:** None.
-
-**Setup:**
-
-- If tenant exists: Stores identifier via `SessionManager::put()`
-- If tenant is null: Removes key via `SessionManager::forget()`
-
-**canResolve override:** Returns `true` only when all conditions are met:
-
-- Tenancy not yet resolved
-- Request has session (`$request->hasSession()`)
-- Hook is `ResolutionHook::Middleware`
-
-**Constraint:** Throws `CompatibilityException` if session service override is enabled. The override creates
-tenant-specific session storage, but this resolver requires shared session access to determine tenant identity.
-
-## Manager
-
-**Location:** `Sprout\Core\Managers\IdentityResolverManager`
-
-Factory responsible for creating and caching resolver instances. Extends `BaseFactory`.
-
-**Configuration path:** `multitenancy.resolvers.{name}`
-
-**Built-in drivers:**
-
-| Driver      | Creator Method            | Class                       |
-|-------------|---------------------------|-----------------------------|
-| `subdomain` | `createSubdomainResolver` | `SubdomainIdentityResolver` |
-| `path`      | `createPathResolver`      | `PathIdentityResolver`      |
-| `header`    | `createHeaderResolver`    | `HeaderIdentityResolver`    |
-| `cookie`    | `createCookieResolver`    | `CookieIdentityResolver`    |
-| `session`   | `createSessionResolver`   | `SessionIdentityResolver`   |
-
-**Accessing the manager:**
-
-```php
-// Via Sprout instance (dependency injection)
-$resolverManager = $sprout->resolvers();
-$resolver = $resolverManager->get('subdomain');
+```
+acme.example.com → "acme"
 ```
 
-**Custom driver registration:**
+Choose this when you want tenants to have their own subdomains. It's visible, memorable, and users can bookmark
+tenant-specific URLs. Requires wildcard DNS or explicit subdomain configuration.
+
+Configure with your parent domain:
 
 ```php
-$sprout->resolvers()->register('custom', function (array $config, string $name) {
-    return new CustomIdentityResolver($name, $config);
-});
+'subdomain' => [
+    'driver' => 'subdomain',
+    'domain' => 'example.com',
+],
 ```
 
-The closure receives the configuration array (from `multitenancy.resolvers.{name}`) and the resolver name.
+### Path
 
-## Exceptions
+Extracts the identifier from a URL path segment.
 
-| Exception                   | Thrown When                                            | Location                  |
-|-----------------------------|--------------------------------------------------------|---------------------------|
-| `CompatibilityException`    | Cookie resolver used with cookie override enabled      | `CookieIdentityResolver`  |
-| `CompatibilityException`    | Session resolver used with session override enabled    | `SessionIdentityResolver` |
-| `MisconfigurationException` | Required config missing (e.g., `domain` for subdomain) | `IdentityResolverManager` |
-| `MisconfigurationException` | Invalid config value (e.g., `segment` < 1)             | `IdentityResolverManager` |
+```
+/acme/dashboard → "acme"
+```
+
+Choose this when subdomains aren't feasible (shared hosting, SSL constraints) or when you want all tenants under a
+single domain. The tenant is still visible in the URL.
+
+By default, uses the first path segment. Configure which segment if needed:
+
+```php
+'path' => [
+    'driver'  => 'path',
+    'segment' => 1,  // first segment
+],
+```
+
+### Header
+
+Extracts the identifier from an HTTP request header.
+
+```
+X-Tenant-Identifier: acme → "acme"
+```
+
+Choose this for APIs where the tenant is specified programmatically. The client sets the header; users never see it.
+Good for machine-to-machine communication.
+
+The resolver also adds the tenant identifier to responses, so clients can confirm which tenant was used.
+
+### Cookie
+
+Extracts the identifier from an encrypted cookie.
+
+```
+Cookie: Tenants-Identifier=<encrypted:acme> → "acme"
+```
+
+Choose this for persistent tenant selection across requests without embedding in URLs. Users visit once with an
+explicit tenant (via another resolver), then the cookie maintains it.
+
+Useful for "remember my tenant" functionality or when combining with another resolver as a fallback.
+
+### Session
+
+Extracts the identifier from session storage.
+
+```
+Session['multitenancy.tenants'] = 'acme' → "acme"
+```
+
+Choose this when tenant selection happens through application logic (user picks from a dropdown) rather than URL
+structure. The session maintains the selection.
+
+Only works at the Middleware hook — sessions aren't available during routing.
+
+## Service Override Conflicts
+
+Two resolvers conflict with their corresponding [service overrides](./service-overrides.md):
+
+**Cookie resolver + cookie override.** The cookie override changes how Laravel's cookie service works, modifying paths
+and domains globally. The cookie resolver needs predictable cookie behaviour. They can't coexist.
+
+**Session resolver + session override.** The session override creates tenant-specific session storage. But the session
+resolver needs to read the session *before* knowing the tenant (to determine which tenant's session to use). They can't
+coexist.
+
+These aren't bugs — they're fundamental design constraints. The resolver needs the service to work one way; the
+override changes it to work another way. Choose one approach per service.
+
+When you enable a conflicting combination, Sprout throws `CompatibilityException` at resolution time with a clear
+message about the conflict.
+
+## Route Configuration
+
+Routing resolvers need to configure routes. When you use `Route::tenanted()`, Sprout calls each resolver's
+`configureRoute()` method.
+
+The subdomain resolver adds a domain constraint:
+
+```php
+// Internally does something like:
+$route->domain('{tenant}.example.com');
+```
+
+The path resolver adds a prefix:
+
+```php
+// Internally does something like:
+$route->prefix('{tenant}');
+```
+
+Both also apply regex pattern constraints if configured, ensuring the tenant parameter matches expected formats.
+
+Non-routing resolvers don't configure routes — they have nothing to add.
+
+## URL Generation
+
+Generating URLs to tenanted routes requires the tenant identifier. Resolvers handle this through their `route()`
+method.
+
+Routing resolvers inject the tenant identifier into the URL parameters:
+
+```php
+$resolver->route('dashboard', $tenancy, $tenant, [], true);
+// Returns: https://acme.example.com/dashboard
+```
+
+Non-routing resolvers just delegate to Laravel's `route()` helper — there's nothing to inject.
+
+During setup, routing resolvers register URL defaults, so for the *current* tenant you don't need to think about it:
+
+```php
+route('dashboard');  // Works automatically within tenant context
+```
+
+For generating URLs to *other* tenants, use Sprout's route helper:
+
+```php
+sprout()->route('dashboard', $otherTenant);
+```
+
+## Configuration
+
+Resolvers are configured under `multitenancy.resolvers`:
+
+```php
+'resolvers' => [
+    'subdomain' => [
+        'driver' => 'subdomain',
+        'domain' => env('TENANTED_DOMAIN'),
+    ],
+    'api' => [
+        'driver' => 'header',
+        'header' => 'X-Tenant-ID',
+    ],
+],
+```
+
+Each resolver has a name (used when specifying which resolver a route uses) and a driver (which resolver class to
+instantiate). Additional options depend on the driver.
+
+### Placeholders
+
+Configuration values support placeholders that are replaced at runtime:
+
+- `{tenancy}`, `{resolver}` — Lowercase versions
+- `{Tenancy}`, `{Resolver}` — Capitalised versions (ucfirst)
+- `{TENANCY}`, `{RESOLVER}` — Uppercase versions
+
+This allows reusable configurations:
+
+```php
+'header' => '{Tenancy}-Identifier',  // Becomes "Tenants-Identifier"
+```
 
 ## Extension
 
-### Creating Custom Resolvers
+Custom resolvers extend the system for identification methods Sprout doesn't include.
+
+### Simple Resolver
 
 Extend `BaseIdentityResolver` and implement `resolveFromRequest()`:
 
 ```php
-class CustomIdentityResolver extends BaseIdentityResolver
+class ApiKeyResolver extends BaseIdentityResolver
 {
     public function resolveFromRequest(Request $request, Tenancy $tenancy): ?string
     {
-        // Extract and return identifier, or null if not found
+        $apiKey = $request->header('X-API-Key');
+
+        if ($apiKey) {
+            // Look up tenant identifier from API key
+            return $this->lookupTenantByApiKey($apiKey);
+        }
+
+        return null;
     }
 }
 ```
 
-### FindsIdentityInRouteParameter Trait
+### Parameter-Based Resolver
 
-**Location:** `Sprout\Core\Concerns\FindsIdentityInRouteParameter`
-
-For parameter-based resolvers, this trait provides the complete implementation of `IdentityResolverUsesParameters`. It
-handles route parameter extraction, pattern constraints, URL generation, and setup actions.
-
-**Properties:**
-
-| Property     | Type    | Default                | Description                        |
-|--------------|---------|------------------------|------------------------------------|
-| `$pattern`   | ?string | `null`                 | Regex constraint for parameter     |
-| `$parameter` | string  | `{tenancy}_{resolver}` | Parameter name (with placeholders) |
-
-**Methods provided:**
-
-| Method                                                    | Purpose                                                  |
-|-----------------------------------------------------------|----------------------------------------------------------|
-| `initialiseRouteParameter($pattern, $parameter)`          | Set pattern and parameter values in constructor          |
-| `setPattern($pattern)`                                    | Set the regex pattern constraint                         |
-| `setParameter($parameter)`                                | Set the parameter name template                          |
-| `getPattern()`                                            | Get the current pattern (or null)                        |
-| `hasPattern()`                                            | Check if a pattern is configured                         |
-| `getParameter()`                                          | Get the raw parameter template                           |
-| `getRouteParameterName($tenancy)`                         | Get resolved parameter name (placeholders replaced)      |
-| `getRouteParameter($tenancy)`                             | Get parameter wrapped in braces for route definitions    |
-| `getParameterPatternMapping($tenancy)`                    | Get `[paramName => pattern]` array for route constraints |
-| `applyParameterPatternMapping($registrar, $tenancy)`      | Apply pattern constraint to route registrar              |
-| `resolveFromRoute($route, $tenancy, $request)`            | Extract identifier from route parameter                  |
-| `setup($tenancy, $tenant)`                                | Set URL defaults for the parameter                       |
-| `route($name, $tenancy, $tenant, $parameters, $absolute)` | Generate URL with tenant parameter                       |
-
-**Contract implementation:**
-
-The trait implements all methods required by `IdentityResolverUsesParameters`:
-
-- `getRouteParameterName()` — Returns the parameter name with placeholders resolved
-- `resolveFromRoute()` — Extracts the identifier from the route parameter, falling back to `resolveFromRequest()` if
-  the parameter is not present
-
-**Setup behaviour:**
-
-The trait's `setup()` method registers the tenant identifier as a URL default:
-
-```php
-URL::defaults([
-    $this->getRouteParameterName($tenancy) => $tenant?->getTenantIdentifier(),
-]);
-```
-
-This ensures URL generation automatically includes the tenant parameter without explicit specification.
-
-**Usage example:**
+If your resolver embeds the identifier in the URL (like subdomain or path), implement
+`IdentityResolverUsesParameters`. The `FindsIdentityInRouteParameter` trait provides most of the implementation:
 
 ```php
 class CustomParameterResolver extends BaseIdentityResolver implements IdentityResolverUsesParameters
 {
     use FindsIdentityInRouteParameter;
 
-    public function __construct(string $name, ?string $pattern = null, ?string $parameter = null, array $hooks = [])
+    public function __construct(string $name, array $hooks = [])
     {
         parent::__construct($name, $hooks);
-        $this->initialiseRouteParameter($pattern, $parameter);
+        $this->initialiseRouteParameter(null, '{tenancy}');
     }
 
     public function resolveFromRequest(Request $request, Tenancy $tenancy): ?string
     {
-        // Fallback resolution when parameter not in route
-        // This is called by the trait's resolveFromRoute() if parameter is absent
+        // Fallback when parameter isn't in route
     }
 
     public function configureRoute(RouteRegistrar $route, Tenancy $tenancy): void
     {
-        // Use trait helpers to configure the route
-        $this->applyParameterPatternMapping(
-            $route->prefix($this->getRouteParameter($tenancy)),
-            $tenancy
-        );
-    }
-
-    public function setup(Tenancy $tenancy, ?Tenant $tenant): void
-    {
-        // Call trait setup for URL defaults
-        $this->traitSetup($tenancy, $tenant);  // If aliased, or use parent if extending
-
-        // Add resolver-specific setup
-        $this->getSprout()->settings()->setUrlPath($this->getTenantRoutePrefix($tenancy));
+        // Set up route constraints
     }
 }
 ```
 
-**Note:** If your resolver needs custom `setup()` behaviour, you must alias the trait method and call it explicitly, as
-both `SubdomainIdentityResolver` and `PathIdentityResolver` do:
+### Registration
+
+Register custom drivers with the resolver manager:
 
 ```php
-use FindsIdentityInRouteParameter {
-    FindsIdentityInRouteParameter::setup as parameterSetup;
-}
-
-public function setup(Tenancy $tenancy, ?Tenant $tenant): void
-{
-    parent::setup($tenancy, $tenant);
-    $this->parameterSetup($tenancy, $tenant);
-    // Additional setup...
-}
+$sprout->resolvers()->register('api-key', function (array $config, string $name) {
+    return new ApiKeyResolver($name, $config);
+});
 ```
 
-## Compatibility Matrix
+## Constraints and Gotchas
 
-### Hook Support
+**Session resolver requires Middleware hook.** It simply won't work at the Routing hook — sessions don't exist yet.
+The resolver enforces this and refuses to resolve.
 
-| Resolver  | Routing | Middleware | Notes                             |
-|-----------|---------|------------|-----------------------------------|
-| Subdomain | ✓       | ✓          |                                   |
-| Path      | ✓       | ✓          |                                   |
-| Header    | ✓       | ✓          |                                   |
-| Cookie    | ✓       | ✓          | Manual decryption at Routing hook |
-| Session   | ✗       | ✓          | Requires session middleware       |
+**Cookie resolver decrypts manually at Routing hook.** Laravel's cookie middleware hasn't run yet, so cookies are
+still encrypted. The resolver handles this, but it's worth knowing if you're debugging.
 
-### Service Override Conflicts
+**Override conflicts are runtime errors.** Sprout doesn't prevent you from configuring conflicting resolver/override
+combinations. The error happens when resolution is attempted. Check your configuration if you see
+`CompatibilityException`.
 
-| Resolver | Conflicting Override | Reason                                           |
-|----------|----------------------|--------------------------------------------------|
-| Cookie   | `cookie`             | Override modifies global cookie behaviour        |
-| Session  | `session`            | Override creates tenant-specific session storage |
-
-Both conflicts throw `CompatibilityException` at resolution time.
+**Resolvers don't validate tenants.** A resolver returns whatever identifier it finds. If that identifier doesn't
+correspond to a real tenant, the [provider](./tenant-providers.md) returns null, and the [tenancy](./tenancy.md) ends up without a tenant. Validation is the
+application's responsibility.
 
 ## Related Documents
 
-- [Resolution Hooks](./resolution-hooks.md) — When and how resolution is triggered
-- [Tenancy Lifecycle](./tenancy-lifecycle.md) — Events and listeners during tenant activation
-- [Service Overrides](./service-overrides.md) — How services become tenant-aware
-- [Tenant Providers](./tenant-providers.md) — Loading tenants from storage
+- [Tenancy](./tenancy.md) — How resolvers are linked to tenancies
+- [Tenant Providers](./tenant-providers.md) — What happens after resolution
+- [Resolution Hooks](./resolution-hooks.md) — When resolution occurs
+- [Tenancy Lifecycle](./tenancy-lifecycle.md) — Events after resolution

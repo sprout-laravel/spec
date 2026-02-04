@@ -1,459 +1,179 @@
 # Service Overrides
 
-Service overrides are classes that hook into the tenancy lifecycle to perform actions when a tenant is activated or
-deactivated. While primarily designed for making services tenant-aware, they are not limited to services — any action
-that needs to respond to tenant context changes can be implemented as a service override.
+Service overrides are hooks into the [tenancy lifecycle](./tenancy-lifecycle.md). When a tenant becomes active, overrides perform setup actions.
+When the tenant is deactivated, they perform cleanup. The name "service override" reflects their primary use case —
+making Laravel services tenant-aware — but they're not limited to services. Any action that should respond to tenant
+context changes can be implemented as an override.
 
-The built-in overrides focus on Laravel's core services (cache, session, filesystem, etc.), but the same mechanism
-works equally well for third-party packages or custom application logic.
+## Why Overrides Exist
 
-## Key Concepts
+Laravel services are designed for single-tenant applications. The cache stores data. The filesystem writes files. The
+session tracks user state. None of them know about tenants.
 
-| Term             | Description                                                      |
-|------------------|------------------------------------------------------------------|
-| Service Override | A class that performs actions on tenant activation/deactivation  |
-| Bootable         | An override that requires initialization during framework boot   |
-| Stacked Override | A composite override containing multiple sub-overrides           |
-| Service Name     | An arbitrary identifier for the override (need not be a service) |
-| Driver           | The class implementing the override (specified in configuration) |
+In a multitenant application, these services need to be tenant-aware:
 
-## The ServiceOverride Contract
+- Cache keys should be isolated per tenant
+- Files should be stored in tenant-specific directories
+- Sessions shouldn't leak between tenants
+- Auth guards should reset when the tenant changes
 
-**Location:** `Sprout\Core\Contracts\ServiceOverride`
+You could manually handle this everywhere you use these services. But that's error-prone and scattered throughout your
+codebase. Overrides centralise this logic — when the tenant changes, the override handles making the service aware.
 
-The core contract that all service overrides must implement.
+## The Two-Phase Pattern
 
-### Constructor
+Overrides have two phases: **setup** and **cleanup**.
 
-```php
-public function __construct(string $service, array $config);
-```
+**Setup** runs when a tenant becomes active. This is where you configure services for the new tenant — set cache
+prefixes, configure filesystem paths, update session settings.
 
-| Parameter  | Type                   | Description                         |
-|------------|------------------------|-------------------------------------|
-| `$service` | `string`               | The service name (e.g., 'cache')    |
-| `$config`  | `array<string, mixed>` | Configuration from overrides config |
+**Cleanup** runs when a tenant is deactivated (either being replaced or leaving tenant context entirely). This is where
+you undo what setup did — clear cached references, reset configurations, forget resolved instances.
 
-### Methods
+When switching tenants (A → B), cleanup runs for A, then setup runs for B. The order matters — you clean up the old
+context before establishing the new one.
 
-| Method      | Return Type | Description                         |
-|-------------|-------------|-------------------------------------|
-| `setup()`   | `void`      | Called when a tenant is activated   |
-| `cleanup()` | `void`      | Called when a tenant is deactivated |
+## Bootable Overrides
 
-### Method: setup()
+Some overrides need to modify services before any tenant is active. They need to register custom drivers, extend
+managers, or replace container bindings. This happens during Laravel's boot phase, before any request processing.
 
-```php
-public function setup(Tenancy $tenancy, Tenant $tenant): void
-```
+These are **bootable overrides**. They have a `boot()` method that runs once during application startup. After that,
+`setup()` and `cleanup()` work as normal.
 
-Called when a new tenant is marked as the current tenant. Implementations should perform any actions required when
-entering tenant context.
+The distinction matters because:
 
-**Parameters:**
+- Boot happens once, setup/cleanup happen per tenant change
+- Boot has access to the application container during startup
+- Boot is where you extend Laravel's managers with custom drivers
 
-| Parameter  | Type      | Description                 |
-|------------|-----------|-----------------------------|
-| `$tenancy` | `Tenancy` | The tenancy being activated |
-| `$tenant`  | `Tenant`  | The tenant being activated  |
-
-### Method: cleanup()
-
-```php
-public function cleanup(Tenancy $tenancy, Tenant $tenant): void
-```
-
-Called when the current tenant is unset, either to be replaced by another tenant or to exit tenant context entirely.
-Called before `setup()` when switching tenants, but only if there was a previous tenant.
-
-**Parameters:**
-
-| Parameter  | Type      | Description                   |
-|------------|-----------|-------------------------------|
-| `$tenancy` | `Tenancy` | The tenancy being deactivated |
-| `$tenant`  | `Tenant`  | The tenant being deactivated  |
-
-## The BootableServiceOverride Contract
-
-**Location:** `Sprout\Core\Contracts\BootableServiceOverride`
-
-An extension of `ServiceOverride` for overrides that require initialization during the framework boot phase.
-
-### Method: boot()
-
-```php
-public function boot(Application $app, Sprout $sprout): void
-```
-
-Called during the framework boot phase (after all service providers have registered). Used to:
-
-- Extend service managers with custom drivers
-- Replace service bindings in the container
-- Register event listeners
-
-**Parameters:**
-
-| Parameter | Type          | Description             |
-|-----------|---------------|-------------------------|
-| `$app`    | `Application` | The Laravel application |
-| `$sprout` | `Sprout`      | The Sprout instance     |
-
-## Base Implementation
-
-**Location:** `Sprout\Core\Overrides\BaseOverride`
-
-An abstract base class providing default implementations and common functionality.
-
-### Traits
-
-| Trait           | Purpose                                       |
-|-----------------|-----------------------------------------------|
-| `AwareOfApp`    | Provides `getApp()`, `setApp()` methods       |
-| `AwareOfSprout` | Provides `getSprout()`, `setSprout()` methods |
-
-### Properties
-
-| Property   | Type                   | Description             |
-|------------|------------------------|-------------------------|
-| `$service` | `string` (readonly)    | The service name        |
-| `$config`  | `array<string, mixed>` | The configuration array |
-
-### Methods
-
-| Method        | Return Type            | Description                  |
-|---------------|------------------------|------------------------------|
-| `getConfig()` | `array<string, mixed>` | Returns the configuration    |
-| `setup()`     | `void`                 | Empty default implementation |
-| `cleanup()`   | `void`                 | Empty default implementation |
+For example, the cache override registers a `sprout` driver during boot. That driver exists for the entire application
+lifetime. When tenants change, setup/cleanup configure which tenant the driver operates on.
 
 ## Stacked Overrides
 
-**Location:** `Sprout\Core\Overrides\StackedOverride`
+Some services need multiple modifications that are logically separate. The filesystem needs both a custom manager and a
+custom driver. Auth needs both guard resetting and password broker replacement.
 
-A composite override that contains multiple sub-overrides, executed in sequence. Implements `BootableServiceOverride`.
+Rather than cramming everything into one override, Sprout supports **stacked overrides** — a composite override
+containing multiple sub-overrides. Each sub-override handles one concern. The stack coordinates them.
 
-### Purpose
+When you enable `filesystem`, you're actually enabling a stack containing:
 
-Some services require multiple modifications that are logically separate but must be applied together. Stacked overrides
-allow grouping these while maintaining separation of concerns.
+1. **FilesystemManagerOverride** — Replaces Laravel's filesystem manager with one that supports tenant context
+2. **FilesystemOverride** — Registers the `sprout` driver for tenant-scoped disks
 
-### Configuration
-
-```php
-'filesystem' => [
-    'driver'    => \Sprout\Core\Overrides\StackedOverride::class,
-    'overrides' => [
-        \Sprout\Core\Overrides\FilesystemManagerOverride::class,
-        \Sprout\Core\Overrides\FilesystemOverride::class,
-    ],
-],
-```
-
-Sub-overrides can be specified as:
-
-- Class name string (no additional config)
-- Array with `driver` key and additional config
-
-```php
-'overrides' => [
-    SomeOverride::class,
-    [
-        'driver' => AnotherOverride::class,
-        'option' => 'value',
-    ],
-],
-```
-
-### Behaviour
-
-| Phase       | Behaviour                                                   |
-|-------------|-------------------------------------------------------------|
-| `boot()`    | Creates sub-override instances, boots any that are bootable |
-| `setup()`   | Calls `setup()` on each sub-override in order               |
-| `cleanup()` | Calls `cleanup()` on each sub-override in order             |
-
-### Methods
-
-| Method           | Return Type                            | Description                        |
-|------------------|----------------------------------------|------------------------------------|
-| `getOverrides()` | `array<class-string, ServiceOverride>` | Returns all sub-override instances |
-| `getOverride()`  | `?ServiceOverride`                     | Returns a specific sub-override    |
-
-## Service Override Manager
-
-**Location:** `Sprout\Core\Managers\ServiceOverrideManager`
-
-Manages the complete lifecycle of service overrides: registration, booting, setup, and cleanup.
-
-### State
-
-| Property             | Type                                         | Description                        |
-|----------------------|----------------------------------------------|------------------------------------|
-| `$overrides`         | `array<string, ServiceOverride>`             | Registered override instances      |
-| `$overrideClasses`   | `array<string, class-string>`                | Mapping of service to driver class |
-| `$bootableOverrides` | `list<string>`                               | Services with bootable overrides   |
-| `$overridesBooted`   | `bool`                                       | Whether boot phase has completed   |
-| `$setupOverrides`    | `array<string, array<class-string, string>>` | Overrides set up per tenancy       |
-
-### Query Methods
-
-| Method                   | Return Type        | Description                                     |
-|--------------------------|--------------------|-------------------------------------------------|
-| `hasOverride()`          | `bool`             | Check if a service has a registered override    |
-| `hasOverrideBooted()`    | `bool`             | Check if a service's override has been booted   |
-| `hasOverrideBeenSetUp()` | `bool`             | Check if an override is set up for a tenancy    |
-| `hasTenancyBeenSetup()`  | `bool`             | Check if any overrides are set up for a tenancy |
-| `isOverrideBootable()`   | `bool`             | Check if a service's override is bootable       |
-| `haveOverridesBooted()`  | `bool`             | Check if the boot phase has completed           |
-| `getOverrideClass()`     | `?string`          | Get the driver class for a service              |
-| `getSetupOverrides()`    | `array`            | Get services set up for a tenancy               |
-| `get()`                  | `?ServiceOverride` | Get the override instance for a service         |
-
-### Lifecycle Methods
-
-| Method                | Description                                     |
-|-----------------------|-------------------------------------------------|
-| `registerOverrides()` | Registers all overrides from configuration      |
-| `bootOverrides()`     | Boots all registered bootable overrides         |
-| `setupOverrides()`    | Sets up enabled overrides for a tenancy/tenant  |
-| `cleanupOverrides()`  | Cleans up set-up overrides for a tenancy/tenant |
-
-### Registration Flow
-
-```
-1. registerOverrides() called from SproutServiceProvider::boot()
-   └─> For each service in config/sprout/overrides.php:
-       └─> register($service)
-           └─> Get config for service
-           └─> Validate driver class implements ServiceOverride
-           └─> Create instance via container
-           └─> Inject app/sprout if methods exist
-           └─> Store in $overrides
-           └─> Dispatch ServiceOverrideRegistered
-           └─> If BootableServiceOverride, add to $bootableOverrides
-           └─> If boot phase passed, boot immediately
-```
-
-### Boot Flow
-
-```
-1. bootOverrides() called from SproutServiceProvider (via app->booted callback)
-   └─> For each bootable service:
-       └─> boot($service)
-           └─> Get override instance
-           └─> Call boot(app, sprout)
-           └─> Dispatch ServiceOverrideBooted
-   └─> Set $overridesBooted = true
-```
-
-### Setup Flow
-
-```
-1. setupOverrides() called from SetupServiceOverrides listener
-   └─> Get enabled overrides from TenancyOptions
-   └─> Initialize tracking for tenancy
-   └─> For each registered override:
-       └─> If enabled (allOverrides or in list):
-           └─> Call override->setup(tenancy, tenant)
-           └─> Track as set up for tenancy
-```
-
-### Cleanup Flow
-
-```
-1. cleanupOverrides() called from CleanupServiceOverrides listener
-   └─> Get enabled overrides from TenancyOptions
-   └─> Get set-up overrides for tenancy
-   └─> For each set-up override:
-       └─> If enabled:
-           └─> Call override->cleanup(tenancy, tenant)
-           └─> Remove from tracking
-       └─> Else:
-           └─> Throw ServiceOverrideException::setupButNotEnabled()
-   └─> Clear tracking for tenancy
-```
+Both run during boot, both run during setup/cleanup, but each handles its own responsibility.
 
 ## Built-in Overrides
 
+Sprout includes overrides for Laravel's core services:
+
 ### cache
 
-**Driver:** `CacheOverride`
-**Bootable:** Yes
+Registers a `sprout` cache driver. Configure stores with `'driver' => 'sprout'` and they automatically scope to the
+current tenant. The underlying driver (redis, file, database) handles actual storage; the sprout wrapper adds tenant
+isolation.
 
-Extends Laravel's cache manager with a `sprout` driver that creates tenant-scoped cache stores.
-
-**Boot Behaviour:**
-
-- Registers a `sprout` driver with the cache manager
-- Tracks which cache stores have been created
-
-**Cleanup Behaviour:**
-
-- Forgets all tracked cache stores so they are recreated with new tenant context
-
-**Usage:**
-
-```php
-// config/cache.php
-'stores' => [
-    'tenant' => [
-        'driver' => 'sprout',
-        'store'  => 'redis',  // The underlying driver
-    ],
-],
-```
+On cleanup, tracked stores are forgotten so they're recreated with the new tenant's prefix.
 
 ### session
 
-**Driver:** `SessionOverride`
-**Bootable:** Yes
+Extends file and native session handlers to store sessions in tenant-specific locations. Optionally extends the database
+handler too.
 
-Extends Laravel's session manager with tenant-aware handlers for file, native, and optionally database drivers.
-
-**Configuration:**
-
-| Option     | Type   | Default | Description                                     |
-|------------|--------|---------|-------------------------------------------------|
-| `database` | `bool` | `false` | Whether to override the database session driver |
-
-**Boot Behaviour:**
-
-- Extends `file` and `native` drivers with `SproutFileSessionHandler`
-- If `database` is true, extends `database` driver with `SproutDatabaseSessionHandler`
-
-**Setup Behaviour:**
-
-- Stores original session config (path, domain, secure, same_site)
-- Updates session config from Sprout settings
-- Sets tenant-specific session cookie name: `{tenancy}_{identifier}_session`
-- Refreshes the session store
-
-**Cleanup Behaviour:**
-
-- Restores original session config
-- Refreshes the session store
+On setup, reconfigures session settings (path, domain, secure, same_site) from tenant context and sets a tenant-specific
+cookie name. On cleanup, restores original settings.
 
 ### cookie
 
-**Driver:** `CookieOverride`
-**Bootable:** No
-
-Configures Laravel's CookieJar with tenant-aware defaults.
-
-**Setup Behaviour:**
-
-- Sets default path, domain, secure, and same_site from Sprout settings
-- Falls back to session config values if settings not present
+Configures cookie defaults (path, domain, secure, same_site) based on tenant context. Not bootable — just updates
+settings on tenant change.
 
 ### filesystem
 
-**Driver:** `StackedOverride`
-**Bootable:** Yes (both sub-overrides)
+A stacked override. The manager override replaces Laravel's filesystem manager. The driver override registers a `sprout`
+disk driver. Configure disks with `'driver' => 'sprout'` and they automatically use tenant-specific root paths.
 
-A stacked override containing:
+On cleanup, tracked disks are forgotten.
 
-1. `FilesystemManagerOverride` — Replaces the filesystem manager
-2. `FilesystemOverride` — Adds the `sprout` driver
+### job
 
-#### FilesystemManagerOverride
+Registers a listener for `JobProcessing`. When a queued job runs, the listener restores tenant context from Laravel's
+Context facade (which was populated when the job was dispatched). This enables tenant context to survive the
+queue/worker boundary.
 
-**Boot Behaviour:**
+No setup/cleanup needed — the listener handles everything.
 
-- Replaces Laravel's filesystem manager with `SproutFilesystemManager`
-- Preserves any already-resolved disks
+### auth
 
-#### FilesystemOverride
+A stacked override. The guard override forgets resolved auth guards on tenant change (so they're re-resolved with new
+tenant context). The password override replaces the password broker manager with a tenant-aware version.
 
-**Boot Behaviour:**
+## Enabling Overrides
 
-- Registers a `sprout` driver with the filesystem manager
-- Tracks which disks have been created
+Overrides are registered globally but enabled per-[tenancy](./tenancy.md). Just because an override exists doesn't mean it runs — the
+tenancy must opt in.
 
-**Cleanup Behaviour:**
-
-- Forgets all tracked disks
-- Forgets any disk configured with `driver: sprout`
-
-**Usage:**
+Enable all overrides:
 
 ```php
-// config/filesystems.php
-'disks' => [
-    'tenant' => [
-        'driver' => 'sprout',
-        'disk'   => 'local',  // The underlying driver
+'tenancies' => [
+    'tenants' => [
+        'options' => [
+            TenancyOptions::allOverrides(),
+        ],
     ],
 ],
 ```
 
-### job
+Enable specific overrides:
 
-**Driver:** `JobOverride`
-**Bootable:** Yes
+```php
+'options' => [
+    TenancyOptions::overrides(['cache', 'filesystem', 'session']),
+],
+```
 
-Enables tenant context propagation to queued jobs.
+This per-tenancy control matters when you have multiple tenancies with different needs. An API tenancy might only need
+cache isolation. A web tenancy might need everything.
 
-**Boot Behaviour:**
+## The Override Lifecycle
 
-- Registers `SetCurrentTenantForJob` listener for `JobProcessing` event
+### Registration (Application Boot)
 
-**Setup/Cleanup:** None — the listener uses Laravel Context which is set by `SetCurrentTenantContext` bootstrapper.
+When the application boots, overrides are created from configuration. Each configured service gets an override instance.
+Bootable overrides are noted for the boot phase.
 
-### auth
+### Boot (Application Booted)
 
-**Driver:** `StackedOverride`
-**Bootable:** Yes (AuthPasswordOverride only)
+After all service providers finish, bootable overrides run their `boot()` method. This is where they extend managers,
+register drivers, and replace bindings.
 
-A stacked override containing:
+### Setup (Tenant Activated)
 
-1. `AuthGuardOverride` — Resets auth guards on tenant change
-2. `AuthPasswordOverride` — Replaces the password broker manager
+When a tenant becomes active, enabled overrides run `setup()`. The manager tracks which overrides were set up for each
+tenancy.
 
-#### AuthGuardOverride
+### Cleanup (Tenant Deactivated)
 
-**Setup/Cleanup Behaviour:**
-
-- Forgets all resolved auth guards
-- Guards are lazily re-resolved with new tenant context
-
-#### AuthPasswordOverride
-
-**Boot Behaviour:**
-
-- Replaces `auth.password` binding with `SproutAuthPasswordBrokerManager`
-- Removes deferred service registration
-
-**Setup/Cleanup Behaviour:**
-
-- Flushes all resolved password brokers
-- Brokers are lazily re-resolved with new tenant context
+When a tenant is deactivated, the manager runs `cleanup()` on overrides that were set up for that tenancy. If an
+override was set up but is no longer enabled (configuration changed mid-request), an exception is thrown — this
+indicates a misconfiguration.
 
 ## Configuration
 
-**Location:** `config/sprout/overrides.php`
-
-### Structure
+Overrides are configured in `config/sprout/overrides.php`:
 
 ```php
 return [
-    'service_name' => [
-        'driver' => OverrideClass::class,
-        // Additional options passed to constructor
+    'cache' => [
+        'driver' => CacheOverride::class,
     ],
-];
-```
-
-### Requirements
-
-| Key      | Required | Description                                 |
-|----------|----------|---------------------------------------------|
-| `driver` | Yes      | Class implementing `ServiceOverride`        |
-| Other    | No       | Passed to override constructor as `$config` |
-
-### Default Configuration
-
-```php
-return [
+    'session' => [
+        'driver'   => SessionOverride::class,
+        'database' => false,  // passed to constructor
+    ],
     'filesystem' => [
         'driver'    => StackedOverride::class,
         'overrides' => [
@@ -461,222 +181,93 @@ return [
             FilesystemOverride::class,
         ],
     ],
-    'job' => [
-        'driver' => JobOverride::class,
-    ],
-    'cache' => [
-        'driver' => CacheOverride::class,
-    ],
-    'auth' => [
-        'driver'    => StackedOverride::class,
-        'overrides' => [
-            AuthGuardOverride::class,
-            AuthPasswordOverride::class,
-        ],
-    ],
-    'cookie' => [
-        'driver' => CookieOverride::class,
-    ],
-    'session' => [
-        'driver'   => SessionOverride::class,
-        'database' => false,
-    ],
 ];
 ```
 
-## Enabling Overrides
+The `driver` key specifies which class to instantiate. Additional keys become the config array passed to the
+constructor.
 
-Overrides must be explicitly enabled per tenancy via `TenancyOptions`.
+For stacked overrides, the `overrides` key lists sub-overrides. Each can be a class name or an array with its own
+`driver` and config.
 
-### Specific Overrides
+## Creating Custom Overrides
 
-```php
-// config/multitenancy.php
-'tenancies' => [
-    'tenants' => [
-        'provider' => 'tenants',
-        'options' => [
-            TenancyOptions::overrides(['cache', 'filesystem', 'session']),
-        ],
-    ],
-],
-```
+Custom overrides let you make any service or system tenant-aware.
 
-### All Overrides
+### Simple Override
+
+Extend `BaseOverride` and implement setup/cleanup:
 
 ```php
-'options' => [
-    TenancyOptions::allOverrides(),
-],
-```
-
-### Query Methods
-
-```php
-TenancyOptions::enabledOverrides($tenancy);        // Returns list or null
-TenancyOptions::shouldEnableAllOverrides($tenancy); // Returns bool
-TenancyOptions::shouldEnableOverride($tenancy, 'cache'); // Returns bool
-```
-
-## Events
-
-### ServiceOverrideEvent
-
-**Location:** `Sprout\Core\Events\ServiceOverrideEvent`
-
-Abstract base class for service override events.
-
-| Property    | Type              | Description           |
-|-------------|-------------------|-----------------------|
-| `$service`  | `string`          | The service name      |
-| `$override` | `ServiceOverride` | The override instance |
-
-### ServiceOverrideRegistered
-
-**Location:** `Sprout\Core\Events\ServiceOverrideRegistered`
-
-Dispatched when a service override is registered.
-
-### ServiceOverrideBooted
-
-**Location:** `Sprout\Core\Events\ServiceOverrideBooted`
-
-Dispatched after a bootable service override has been booted.
-
-## Exceptions
-
-### ServiceOverrideException
-
-**Location:** `Sprout\Core\Exceptions\ServiceOverrideException`
-
-| Factory Method         | Condition                                          |
-|------------------------|----------------------------------------------------|
-| `notBootable()`        | Attempting to boot a non-bootable override         |
-| `setupButNotEnabled()` | Override was set up but is not enabled for cleanup |
-
-### MisconfigurationException
-
-| Factory Method    | Condition                                         |
-|-------------------|---------------------------------------------------|
-| `notFound()`      | Service override not found in configuration       |
-| `missingConfig()` | Required config key (e.g., `driver`) is missing   |
-| `invalidConfig()` | Driver class does not implement `ServiceOverride` |
-
-## Lifecycle Flow
-
-### Application Boot
-
-```
-1. SproutServiceProvider::boot()
-   └─> registerServiceOverrides()
-       └─> ServiceOverrideManager::registerOverrides()
-           └─> For each configured service:
-               └─> Create override instance
-               └─> Dispatch ServiceOverrideRegistered
-               └─> Track bootable overrides
-
-2. Application booted callback
-   └─> ServiceOverrideManager::bootOverrides()
-       └─> For each bootable override:
-           └─> Call boot()
-           └─> Dispatch ServiceOverrideBooted
-       └─> Mark boot phase complete
-```
-
-### Tenant Activation
-
-```
-1. Tenant identified/loaded
-   └─> CurrentTenantChanged event
-       └─> CleanupServiceOverrides listener (if previous tenant)
-           └─> ServiceOverrideManager::cleanupOverrides()
-       └─> SetupServiceOverrides listener
-           └─> ServiceOverrideManager::setupOverrides()
-```
-
-### Tenant Deactivation
-
-```
-1. Tenancy::setTenant(null)
-   └─> CurrentTenantChanged event (current = null)
-       └─> CleanupServiceOverrides listener
-           └─> ServiceOverrideManager::cleanupOverrides()
-       └─> SetupServiceOverrides listener (skipped, no current tenant)
-```
-
-## Extension
-
-### Creating a Custom Override
-
-```php
-namespace App\Overrides;
-
-use Sprout\Core\Overrides\BaseOverride;
-use Sprout\Core\Contracts\Tenancy;
-use Sprout\Core\Contracts\Tenant;
-
-class CustomServiceOverride extends BaseOverride
+class NotificationOverride extends BaseOverride
 {
     public function setup(Tenancy $tenancy, Tenant $tenant): void
     {
-        // Perform actions when tenant is activated
+        // Configure notifications for tenant
+        config(['services.mailgun.domain' => $tenant->mail_domain]);
     }
 
     public function cleanup(Tenancy $tenancy, Tenant $tenant): void
     {
-        // Perform actions when tenant is deactivated
+        // Reset to default
+        config(['services.mailgun.domain' => config('services.mailgun.default_domain')]);
     }
 }
 ```
 
-### Creating a Bootable Override
+### Bootable Override
+
+Implement `BootableServiceOverride` for overrides that need to run at boot:
 
 ```php
-namespace App\Overrides;
-
-use Illuminate\Contracts\Foundation\Application;
-use Sprout\Core\Contracts\BootableServiceOverride;
-use Sprout\Core\Overrides\BaseOverride;
-use Sprout\Core\Sprout;
-
-class CustomBootableOverride extends BaseOverride implements BootableServiceOverride
+class QueueOverride extends BaseOverride implements BootableServiceOverride
 {
     public function boot(Application $app, Sprout $sprout): void
     {
-        // Register drivers, replace bindings, etc.
+        // Register tenant-aware queue connector
+        $app['queue']->extend('tenant', function () {
+            return new TenantQueueConnector();
+        });
     }
 }
 ```
 
-### Registering a Custom Override
+### Registration
+
+Add to `config/sprout/overrides.php`:
 
 ```php
-// config/sprout/overrides.php
-return [
-    // ... existing overrides
-
-    'custom' => [
-        'driver' => \App\Overrides\CustomServiceOverride::class,
-        'option' => 'value',
-    ],
-];
-```
-
-### Enabling the Custom Override
-
-```php
-// config/multitenancy.php
-'tenancies' => [
-    'tenants' => [
-        'options' => [
-            TenancyOptions::overrides(['custom', 'cache', 'filesystem']),
-        ],
-    ],
+'notifications' => [
+    'driver' => NotificationOverride::class,
 ],
 ```
 
+And enable in your tenancy:
+
+```php
+TenancyOptions::overrides(['notifications', 'cache', ...]),
+```
+
+## Constraints and Gotchas
+
+**Overrides must be idempotent.** Setup might run multiple times if tenants change during a request. Cleanup might run
+without a corresponding setup if configuration changes. Handle these gracefully.
+
+**Boot runs once, not per-tenant.** Don't put tenant-specific logic in boot — that belongs in setup. Boot is for
+framework-level configuration that applies regardless of tenant.
+
+**Order matters for stacked overrides.** Sub-overrides run in the order they're listed. If one depends on another's
+work, list the dependency first.
+
+**Cleanup receives the departing tenant.** When cleanup runs, `$tenant` is the tenant being deactivated, not the new
+one. The new tenant (if any) isn't set yet.
+
+**The manager tracks setup state.** If you bypass the manager and call setup/cleanup directly, the tracking won't match
+reality. Always go through the manager.
+
 ## Related Documents
 
-- [Tenancy Lifecycle](./tenancy-lifecycle.md) — Events and bootstrappers that trigger overrides
-- [Resolution Hooks](./resolution-hooks.md) — When tenant resolution occurs
-- [Identity Resolvers](./identity-resolvers.md) — How tenant identity is extracted
+- [Tenancy](./tenancy.md) — How tenancies enable overrides via options
+- [Tenancy Lifecycle](./tenancy-lifecycle.md) — When overrides are triggered
+- [Tenant Providers](./tenant-providers.md) — How tenants are loaded before overrides run
+- [Identity Resolvers](./identity-resolvers.md) — Resolver/override conflicts

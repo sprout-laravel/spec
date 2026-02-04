@@ -1,458 +1,204 @@
 # Resolution Hooks
 
-Resolution hooks define the points in Laravel's request lifecycle where tenant identification can occur.
+Resolution hooks are points in Laravel's request lifecycle where tenant identification can occur. Sprout provides two
+hooks: one during routing, one during middleware execution. The choice of hook affects when tenant context becomes
+available and which resolvers can be used.
 
-## Key Concepts
+## The Two Hooks
 
-| Term            | Description                                                               |
-|-----------------|---------------------------------------------------------------------------|
-| Resolution Hook | A specific point in the Laravel request lifecycle where resolution occurs |
-| Handler         | The class responsible for triggering resolution at a specific hook        |
-| Hook Support    | Whether a hook is enabled in configuration                                |
-| Current Hook    | The hook currently being processed, tracked by Sprout                     |
+### Routing Hook
 
-## The ResolutionHook Enum
+The routing hook fires when Laravel's `RouteMatched` event occurs — after the router has matched the request to a route
+but before middleware begins executing.
 
-**Location:** `Sprout\Core\Support\ResolutionHook`
+At this point:
 
-The `ResolutionHook` enum defines the available points in the Laravel request lifecycle where tenant resolution can be
-triggered.
+- The matched route is available (including route parameters)
+- Sessions are NOT available (session middleware hasn't run)
+- Auth is NOT available (auth middleware hasn't run)
+- Service containers bindings from middleware aren't available yet
 
-```php
-enum ResolutionHook
-{
-    case Booting;
-    case Routing;
-    case Middleware;
-}
-```
+This is the earliest possible moment for tenant resolution. If you resolve here, tenant context is available throughout
+the entire middleware stack. [Service overrides](./service-overrides.md) can configure services before any middleware uses them.
 
-### Enum Cases
+Most [resolvers](./identity-resolvers.md) work at the routing hook: subdomain, path, header, and cookie. They extract identifiers from URLs or
+request metadata, none of which requires middleware to have run.
 
-| Case         | Description                       | Handler Class                   | Status   |
-|--------------|-----------------------------------|---------------------------------|----------|
-| `Booting`    | During service provider booting   | —                               | Reserved |
-| `Routing`    | When `RouteMatched` event fires   | `IdentifyTenantOnRouting`       | Active   |
-| `Middleware` | During middleware stack execution | `SproutTenantContextMiddleware` | Active   |
+### Middleware Hook
 
-The `Booting` case exists in the enum but is not currently implemented. It is reserved for potential future use cases
-where tenant resolution needs to occur before routing.
+The middleware hook fires during middleware stack execution, specifically when Sprout's tenant middleware runs.
 
-## Request Lifecycle Position
+At this point:
 
-```
-Request
-   │
-   ▼
-┌─────────────────────────┐
-│     Route Matching      │
-└───────────┬─────────────┘
-            │
-            ▼
-┌─────────────────────────┐
-│   RouteMatched Event    │
-│   ┌───────────────────┐ │
-│   │   Routing Hook    │ │  ← Route and parameters available
-│   └───────────────────┘ │
-└───────────┬─────────────┘
-            │
-            ▼
-┌─────────────────────────┐
-│      Middleware         │
-│   ┌───────────────────┐ │
-│   │ Middleware Hook   │ │  ← Sessions, auth available
-│   └───────────────────┘ │
-│                         │
-│   Tenant enforcement    │  ← Exception if no tenant (required middleware)
-└───────────┬─────────────┘
-            │
-            ▼
-┌─────────────────────────┐
-│    Controller/Action    │
-└─────────────────────────┘
-```
+- Sessions ARE available (if session middleware ran earlier)
+- Auth may be available (if auth middleware ran earlier)
+- Other middleware-provided context is available
 
-## Handler Classes
+This hook exists primarily for the [session resolver](./identity-resolvers.md#session), which needs session data to determine the tenant. It's also useful
+as a fallback — if the routing hook didn't resolve a tenant (perhaps the resolver couldn't run at that hook), the
+middleware hook gets another chance.
 
-### IdentifyTenantOnRouting
+## Why Both Exist
 
-**Location:** `Sprout\Core\Listeners\IdentifyTenantOnRouting`
+Different resolvers have different requirements.
 
-An event listener registered for Laravel's `RouteMatched` event. Triggers tenant resolution at
-the `ResolutionHook::Routing` point.
+The **session resolver** stores tenant identity in the session. Sessions don't exist during routing — Laravel's session
+middleware creates them. So the session resolver can only work at the middleware hook.
 
-**Registration:** Conditional, in `SproutServiceProvider::registerEventListeners()`:
+Other resolvers (subdomain, path, header, cookie) work at both hooks. For these, the routing hook is preferable because
+it's earlier — tenant context is available sooner, and service overrides can configure services before any middleware
+runs.
 
-```php
-if ($this->sprout->supportsHook(ResolutionHook::Routing)) {
-    $events->listen(RouteMatched::class, IdentifyTenantOnRouting::class);
-}
-```
+Having both hooks means you get the best of both worlds:
 
-**Behaviour:**
+- Early resolution when possible (routing hook)
+- Session-based resolution when needed (middleware hook)
+- Fallback if early resolution fails
 
-1. Parses the matched route's middleware stack to locate Sprout middleware
-2. Extracts resolver and tenancy names from middleware parameters
-3. Delegates to `ResolutionHelper::handleResolution()` with `throw: false`
+## How the Hooks Interact
 
-**Middleware Detection:** The listener searches for either:
+The hooks don't compete — they cooperate.
 
-- `sprout.tenanted` (`SproutTenantContextMiddleware::ALIAS`)
-- `sprout.tenanted.optional` (`SproutOptionalTenantContextMiddleware::ALIAS`)
+If a tenant is resolved at the routing hook, the middleware hook skips resolution. The [tenancy](./tenancy.md) already has a tenant;
+there's nothing more to do. The middleware still runs, but only to enforce that a tenant exists (for required routes).
 
-If no Sprout middleware is found on the route, resolution is skipped.
+If the routing hook doesn't resolve a tenant (resolver couldn't run, identifier not found, hook disabled), the
+middleware hook attempts resolution. This is the fallback path.
 
-### SproutTenantContextMiddleware
+This interaction happens automatically. Resolvers declare which hooks they support via `canResolve()`, and Sprout checks
+before attempting resolution.
 
-**Location:** `Sprout\Core\Http\Middleware\SproutTenantContextMiddleware`
+## Required vs Optional Tenants
 
-**Alias:** `sprout.tenanted`
+Resolution hooks determine *when* identification happens. Middleware determines *whether* a tenant is required.
 
-Middleware that handles both the `Middleware` hook resolution and tenant enforcement.
+**Required tenant routes** use `sprout.tenanted` middleware. After all hooks have run, if there's no tenant, the
+middleware throws `NoTenantFoundException`. The route requires a tenant; missing one is an error.
 
-**Dual Function:**
+**Optional tenant routes** use `sprout.tenanted.optional` middleware. If no tenant is found after all hooks, that's
+fine. The route works with or without tenant context.
 
-1. **Resolution** — If `ResolutionHook::Middleware` is enabled, attempts tenant resolution
-2. **Enforcement** — Throws `NoTenantFoundException` if no tenant was resolved by any hook
-
-**Behaviour:**
-
-```php
-public function handle(Request $request, Closure $next, string ...$options): Response
-{
-    [$resolverName, $tenancyName] = ResolutionHelper::parseOptions($options);
-
-    if ($this->sprout->supportsHook(ResolutionHook::Middleware)) {
-        ResolutionHelper::handleResolution(
-            $request,
-            ResolutionHook::Middleware,
-            $this->sprout,
-            $resolverName,
-            $tenancyName,
-        );
-    }
-
-    if (! $this->sprout->hasCurrentTenancy() || ! $this->sprout->getCurrentTenancy()?->check()) {
-        throw NoTenantFoundException::make(
-            $resolverName ?? $defaultResolver,
-            $tenancyName ?? $defaultTenancy
-        );
-    }
-
-    return $next($request);
-}
-```
-
-### SproutOptionalTenantContextMiddleware
-
-**Location:** `Sprout\Core\Http\Middleware\SproutOptionalTenantContextMiddleware`
-
-**Alias:** `sprout.tenanted.optional`
-
-Middleware that handles the `Middleware` hook resolution without tenant enforcement.
-
-**Behaviour:**
-
-- Attempts resolution if `ResolutionHook::Middleware` is enabled
-- Does not throw an exception if no tenant is found
-- Passes `optional: true` to `ResolutionHelper::handleResolution()`
-
-## Resolution Helper
-
-**Location:** `Sprout\Core\Support\ResolutionHelper`
-
-A static helper class that orchestrates the resolution process for all hooks.
-
-### Method: parseOptions()
-
-Parses middleware parameters into resolver and tenancy names.
-
-```php
-public static function parseOptions(array $options): array
-```
-
-| Parameter Count | Result                          |
-|-----------------|---------------------------------|
-| 2               | `[$resolverName, $tenancyName]` |
-| 1               | `[$resolverName, null]`         |
-| 0               | `[null, null]`                  |
-
-### Method: handleResolution()
-
-The central resolution orchestration method.
-
-```php
-public static function handleResolution(
-    Request        $request,
-    ResolutionHook $hook,
-    Sprout         $sprout,
-    ?string        $resolverName = null,
-    ?string        $tenancyName = null,
-    bool           $throw = true,
-    bool           $optional = false
-): bool
-```
-
-**Parameters:**
-
-| Parameter       | Type             | Description                                       |
-|-----------------|------------------|---------------------------------------------------|
-| `$request`      | `Request`        | The current HTTP request                          |
-| `$hook`         | `ResolutionHook` | The hook being processed                          |
-| `$sprout`       | `Sprout`         | The Sprout instance                               |
-| `$resolverName` | `?string`        | Resolver name, or `null` for default              |
-| `$tenancyName`  | `?string`        | Tenancy name, or `null` for default               |
-| `$throw`        | `bool`           | Whether to throw on failure (default: `true`)     |
-| `$optional`     | `bool`           | Whether resolution is optional (default: `false`) |
-
-**Return Value:** `true` if a tenant was successfully identified, `false` otherwise.
-
-**Resolution Flow:**
-
-1. **Set current hook** — `$sprout->setCurrentHook($hook)`
-2. **Validate hook support** — Throws `MisconfigurationException` if hook is disabled
-3. **Get resolver and tenancy** — Uses defaults if names are `null`
-4. **Check skip conditions:**
-    - If tenancy already has a tenant (`$tenancy->check()`), returns `false`
-    - If resolver cannot resolve at this hook (`!$resolver->canResolve(...)`), returns `false`
-5. **Set current tenancy** — `$sprout->setCurrentTenancy($tenancy)`
-6. **Resolve identity:**
-    - If resolver implements `IdentityResolverUsesParameters` AND route has the parameter:
-      calls `$resolver->resolveFromRoute()`
-    - Otherwise: calls `$resolver->resolveFromRequest()`
-7. **Handle optional resolution** — If `$optional` and no identity, returns `false`
-8. **Record resolution metadata** — `$tenancy->resolvedVia($resolver)->resolvedAt($hook)`
-9. **Identify tenant** — Calls `$tenancy->identify($identity)`
-10. **Handle failure** — If no tenant found and `$throw`, throws `NoTenantFoundException`
-
-**Parameter Removal:** For parameter-based resolvers, the route parameter is removed after resolution to prevent it from
-appearing in controller method signatures:
-
-```php
-$route->forgetParameter($resolver->getRouteParameterName($tenancy));
-```
+The distinction is about enforcement, not resolution. Both middleware types attempt resolution at the middleware hook
+(if enabled). The difference is what happens when resolution fails.
 
 ## Configuration
 
-**Location:** `config/sprout/core.php`
-
-### hooks
-
-An array of `ResolutionHook` enum cases indicating which hooks are enabled.
+Hooks are enabled in configuration:
 
 ```php
+// config/sprout/core.php
 'hooks' => [
-    \Sprout\Core\Support\ResolutionHook::Routing,
-    \Sprout\Core\Support\ResolutionHook::Middleware,
+    ResolutionHook::Routing,
+    ResolutionHook::Middleware,
 ],
 ```
 
-The order of hooks in the configuration array does not affect execution order. Each hook fires at its predetermined
-point in the Laravel request lifecycle.
+By default, both hooks are enabled. The order in the array doesn't matter — each hook fires at its predetermined point
+in the lifecycle.
 
-**Default:** Both `Routing` and `Middleware` hooks are enabled.
+### Disabling Hooks
 
-## Hook State Tracking
+You might disable a hook for simplicity or performance:
 
-The `Sprout` class tracks the current resolution hook during request processing.
+**Disable Routing hook** if you only use the session resolver. Since it can't run at the routing hook anyway, there's
+no point having the hook enabled. But note that disabling means no early resolution — tenant context won't be available
+until middleware runs.
 
-### Methods
-
-| Method             | Return Type       | Description                                     |
-|--------------------|-------------------|-------------------------------------------------|
-| `setCurrentHook()` | `static`          | Sets the current hook (called by handlers)      |
-| `getCurrentHook()` | `?ResolutionHook` | Returns the current hook, or `null` if none     |
-| `isCurrentHook()`  | `bool`            | Checks if the current hook matches the argument |
-| `supportsHook()`   | `bool`            | Checks if a hook is enabled in configuration    |
-
-### Usage
-
-```php
-// During request processing
-$currentHook = $sprout->getCurrentHook();
-
-// Check if at a specific hook
-if ($sprout->isCurrentHook(ResolutionHook::Routing)) {
-    // ...
-}
-
-// Check if a hook is enabled
-if ($sprout->supportsHook(ResolutionHook::Middleware)) {
-    // ...
-}
-```
+**Disable Middleware hook** if you only use resolvers that work at the routing hook and don't need the fallback. This
+is rare — most applications benefit from having both enabled.
 
 ## Middleware Parameters
 
-Both middleware classes accept optional parameters to specify the resolver and tenancy.
-
-### Format
-
-```
-sprout.tenanted
-sprout.tenanted:{resolver}
-sprout.tenanted:{resolver},{tenancy}
-```
-
-### Examples
+The tenant middleware accepts optional parameters to specify which resolver and tenancy to use:
 
 ```php
 // Default resolver and tenancy
-Route::middleware('sprout.tenanted')->group(function () {
-    // ...
-});
+Route::middleware('sprout.tenanted')->group(...);
 
-// Specific resolver, default tenancy
-Route::middleware('sprout.tenanted:subdomain')->group(function () {
-    // ...
-});
+// Specific resolver
+Route::middleware('sprout.tenanted:subdomain')->group(...);
 
 // Specific resolver and tenancy
-Route::middleware('sprout.tenanted:subdomain,organisations')->group(function () {
-    // ...
-});
-
-// Optional tenant context
-Route::middleware('sprout.tenanted.optional:header')->group(function () {
-    // ...
-});
+Route::middleware('sprout.tenanted:subdomain,organizations')->group(...);
 ```
 
-## Resolver Compatibility
-
-Resolvers declare which hooks they support via the `canResolve()` method on the `IdentityResolver` contract.
-
-| Resolver  | Routing | Middleware | Notes                       |
-|-----------|---------|------------|-----------------------------|
-| Subdomain | ✓       | ✓          | Works at either hook        |
-| Path      | ✓       | ✓          | Works at either hook        |
-| Header    | ✓       | ✓          | Works at either hook        |
-| Cookie    | ✓       | ✓          | Works at either hook        |
-| Session   | ✗       | ✓          | Requires session middleware |
-
-The session resolver explicitly checks for the `Middleware` hook:
-
-```php
-public function canResolve(Request $request, Tenancy $tenancy, ResolutionHook $hook): bool
-{
-    return $hook === ResolutionHook::Middleware;
-}
-```
+The `Route::tenanted()` macro handles this for you, but understanding the format helps when debugging or configuring
+manually.
 
 ## Middleware Priority
 
-When using the `Middleware` hook with resolvers that depend on other middleware (such as the session resolver), you may
-need to adjust middleware priority.
+When using the session resolver, Sprout's middleware must run *after* Laravel's session middleware. Otherwise, sessions
+won't be available when resolution is attempted.
 
-**Example:** Ensuring Sprout middleware runs after `StartSession`:
+Laravel's middleware priority system handles this. If you encounter issues, you can explicitly set the priority:
 
 ```php
 // bootstrap/app.php
-return Application::configure(basePath: dirname(__DIR__))
-    ->withMiddleware(function (Middleware $middleware) {
-        $middleware->appendToPriorityList(
-            \Illuminate\Session\Middleware\StartSession::class,
-            \Sprout\Core\Http\Middleware\SproutTenantContextMiddleware::class
-        );
-    });
+->withMiddleware(function (Middleware $middleware) {
+    $middleware->appendToPriorityList(
+        StartSession::class,
+        SproutTenantContextMiddleware::class
+    );
+})
 ```
 
-> **Note:** Only adjust middleware priority when using resolvers that depend on middleware-provided data (e.g., session
-> resolver). Changing priority unnecessarily can cause issues with service overrides and other Sprout features.
+Only adjust priority when using session-dependent resolvers. For most applications with subdomain, path, or header
+resolvers, the default priority works fine.
 
-## Exceptions
+## Lifecycle Position
 
-### MisconfigurationException
-
-**Location:** `Sprout\Core\Exceptions\MisconfigurationException`
-
-Thrown when attempting to use a hook that is not enabled in configuration.
-
-**Factory Method:**
-
-```php
-public static function unsupportedHook(ResolutionHook $hook): self
+```
+Request arrives
+      │
+      ▼
+Route matching
+      │
+      ▼
+RouteMatched event
+   ┌──┴───────────┐
+   │ Routing Hook │  ← Tenant identified here if possible
+   └──┬───────────┘
+      │
+      ▼
+Middleware stack begins
+      │
+      ▼
+Session middleware (if present)
+      │
+      ▼
+Sprout tenant middleware
+   ┌──┴──────────────┐
+   │ Middleware Hook │  ← Fallback resolution, enforcement
+   └──┬──────────────┘
+      │
+      ▼
+Remaining middleware
+      │
+      ▼
+Controller
 ```
 
-### NoTenantFoundException
+The earlier resolution happens, the more of the request has tenant context available.
 
-**Location:** `Sprout\Core\Exceptions\NoTenantFoundException`
+## Constraints and Gotchas
 
-Thrown by `SproutTenantContextMiddleware` when no tenant was resolved by any hook and the route requires a tenant.
+**The Booting hook exists but isn't implemented.** The `ResolutionHook` enum includes a `Booting` case, reserved for
+potential future use. Currently, only `Routing` and `Middleware` are functional.
 
-**Factory Method:**
+**Session resolver only works at Middleware hook.** It explicitly checks the hook and refuses to resolve at Routing.
+This isn't a limitation to work around — it's fundamental to how sessions work.
 
-```php
-public static function make(string $resolver, string $tenancy): self
-```
+**Disabling Routing hook affects service overrides.** If overrides run before tenant context exists, they can't
+configure services correctly. This matters for overrides like cache and filesystem that need tenant information during
+setup.
 
-## Common Patterns
-
-### Standard Web Application
-
-Enable both hooks with a resolver that works at the `Routing` hook:
-
-```php
-// config/sprout/core.php
-'hooks' => [
-    ResolutionHook::Routing,
-    ResolutionHook::Middleware,
-],
-```
-
-The tenant is resolved early and available throughout the middleware stack.
-
-### Session-Based Identification
-
-For applications using the session resolver:
-
-```php
-// config/sprout/core.php
-'hooks' => [
-    ResolutionHook::Middleware,
-],
-```
-
-Or keep both enabled — the session resolver will skip the `Routing` hook via its `canResolve()` method.
-
-### API with Early Resolution
-
-For APIs that only need early resolution (header, cookie, path, subdomain):
-
-```php
-// config/sprout/core.php
-'hooks' => [
-    ResolutionHook::Routing,
-],
-```
-
-The `Middleware` hook is not needed since these resolvers do not require session data.
-
-## Tenancy Resolution Tracking
-
-After resolution, the tenancy tracks how and when the tenant was resolved:
-
-```php
-// Get the resolver that performed resolution
-$resolver = $tenancy->resolver();
-
-// Get the hook where resolution occurred
-$hook = $tenancy->hook();
-
-// Check if resolution has occurred
-if ($tenancy->wasResolved()) {
-    // ...
-}
-```
-
-These methods are populated by `ResolutionHelper::handleResolution()`:
-
-```php
-$tenancy->resolvedVia($resolver)->resolvedAt($hook);
-```
+**The routing hook listener checks for Sprout middleware.** Resolution at the routing hook only happens if the matched
+route has Sprout's tenant middleware. Routes without the middleware don't trigger resolution, even if the hook is
+enabled.
 
 ## Related Documents
 
-- [Identity Resolvers](./identity-resolvers.md) — How tenant identity is extracted from requests
-- [Tenancy Lifecycle](./tenancy-lifecycle.md) — Events and listeners during tenant activation
-- [Service Overrides](./service-overrides.md) — Making Laravel services tenant-aware
+- [Identity Resolvers](./identity-resolvers.md) — How resolvers extract identifiers and which hooks they support
+- [Tenancy](./tenancy.md) — How resolved tenants are stored and tracked
+- [Tenancy Lifecycle](./tenancy-lifecycle.md) — Events triggered after resolution
+- [Service Overrides](./service-overrides.md) — Why early resolution matters for overrides
