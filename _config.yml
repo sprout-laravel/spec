@@ -14,17 +14,32 @@ show_downloads: false
 
 # SEO/social
 url: https://spec.sproutforlaravel.com  # adjust to your actual custom domain
+
 baseurl: ""
 
 # Open Graph / social sharing
 logo: /assets/sprout-og-image.png  # if you have one
+
 social:
   name: Ollie Read
   links:
     - https://github.com/ollieread
     - https://ollieread.com
 
+twitter:
+  username: ollieread
+  card: summary_large_image
+
+# Open Graph defaults
+defaults:
+  - scope:
+      path: ""
+    values:
+      image: /assets/sprout-og-image.png  # default OG image for pages without one
+
 # Additional metadata
+lang: en_GB
+
 keywords:
   - laravel
   - multitenancy
