@@ -56,4 +56,4 @@ This was rejected for the following reasons:
 
 ## References
 
-- The issue for the change: sprout-laravel/sprout#120
+- The issue for the change: [sprout-laravel/sprout#120](https://github.com/sprout-laravel/sprout/issues/120)
