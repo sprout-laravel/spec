@@ -1,5 +1,5 @@
-title: Sprout Technical Spec
-description: A flexible multitenancy package for Laravel, providing tenant identification, resolution, and lifecycle management.
+title: Sprout Specification
+description: Technical specification, architecture documentation, and design decisions for Sprout — a flexible multitenancy package for Laravel.
 
 # Repository info (used by some themes)
 repository: ollieread/sprout-spec
