@@ -33,8 +33,9 @@ Examples include:
 
 ## Index
 
-| ADR                        | Title    | Status | Date |
-|----------------------------|----------|--------|------|
-| [0000](./0000-template.md) | Template | —      | —    |
+| ADR                           | Title       | Status   | Date       |
+|-------------------------------|-------------|----------|------------|
+| [0000](./0000-template.md)    | Template    | —        | —          |
+| [0001](./0001-monorepo-v2.md) | Monorepo v2 | Accepted | 2026-02-04 |
 
 <!-- Add new ADRs above this line -->
