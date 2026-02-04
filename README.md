@@ -20,8 +20,8 @@ Request for Comments documents for proposing significant changes or new features
 discuss and evaluate proposals before implementation.
 
 - [RFC-0000: Template](./rfcs/0000-template.md) — Template for new RFCs
-- [RFC-0001: Seedling](./rfcs/0001-seedling.md) — Multi-database support
-- [RFC-0002: Canopy](./rfcs/0002-canopy.md) — Domain-based tenant identification
+- [RFC-0001: Seedling — Multi-Database Support](./rfcs/0001-seedling.md) — Multi-database support
+- [RFC-0002: Canopy — Domain-Based Tenant Identification](./rfcs/0002-canopy.md) — Domain-based tenant identification
 - [RFC-0003: Stacked Identity Resolution](./rfcs/0003-stacked-identity-resolution.md) — Stacked Identity Resolution
 - [Index](./rfcs/README.md) — List of all RFCs and their status
 

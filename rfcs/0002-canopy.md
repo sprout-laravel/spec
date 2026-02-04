@@ -8,8 +8,8 @@
 ## Summary
 
 Canopy provides custom domain support for Sprout, allowing tenants to access the application via their own domains. It
-includes a domain management system, optional verification workflows, driver-based SSL certificate provisioning, and
-fallback handling for unrecognised domains.
+includes a domain management system, DNS verification and validation workflows, driver-based SSL certificate
+provisioning, and built-in subdomain fallback.
 
 ## Motivation
 
@@ -24,61 +24,189 @@ Custom domain support introduces several challenges:
 
 1. **Routing** — Determining which tenant a request belongs to when it arrives on an arbitrary domain
 2. **Verification** — Ensuring a tenant actually controls the domain they're claiming
-3. **SSL** — Provisioning and managing certificates for tenant domains
-4. **Fallback** — Handling requests to domains that aren't registered
+3. **Validation** — Confirming DNS records are correctly configured
+4. **SSL** — Provisioning and managing certificates for tenant domains
+5. **Fallback** — Handling tenants without custom domains via subdomain identification
 
-Sprout Core already handles subdomain and path-based identification. Canopy extends this to support to fully custom
-domains while integrating with Core's tenancy system.
+Sprout Core already handles subdomain and path-based identification. Canopy extends this to support fully custom domains
+while integrating with Core's tenancy system.
 
 ### Goals
 
 - Enable tenants to use their own domains
-- Provide optional domain verification to prevent domain squatting
+- Provide DNS verification to prove domain ownership
+- Provide DNS validation to confirm correct configuration
 - Support driver-based SSL certificate management
-- Handle fallback scenarios gracefully
+- Include built-in subdomain fallback for tenants without custom domains
 - Integrate cleanly with Core's resolver system
 
 ### Non-Goals
 
-- Canopy does not replace Core's subdomain resolver (that's already handled)
-- Canopy does not manage DNS (tenants configure their own DNS)
+- Canopy does not replace Core's subdomain resolver (though it can fall back to it)
+- Canopy does not manage DNS records (tenants configure their own DNS)
 - Canopy does not handle tenant-controlled subdomains under custom domains (e.g., `*.acme.com`) — this is part of nested
   tenancies (separate RFC)
+
+## Configuration
+
+Canopy's configuration lives in `config/sprout/canopy.php`. The structure follows Sprout's conventions and mirrors
+patterns from Laravel's `database.connections` and `auth.guards`.
+
+```php
+<?php
+
+return [
+
+    /*
+    |--------------------------------------------------------------------------
+    | Default Domain Repository
+    |--------------------------------------------------------------------------
+    |
+    | The default domain repository to use when resolving custom domains.
+    |
+    */
+
+    'default' => env('CANOPY_REPOSITORY', 'default'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Domain Repositories
+    |--------------------------------------------------------------------------
+    |
+    | Domain repositories define how custom domains are stored, looked up,
+    | verified, validated, and secured. You can define multiple repositories
+    | for different use cases (e.g., different SSL providers for different
+    | environments).
+    |
+    */
+
+    'repositories' => [
+
+        'default' => [
+            // The driver for domain lookup
+            'driver' => 'eloquent',
+            'model' => App\Models\Domain::class,
+
+            // Caching for domain lookups
+            'cache' => [
+                'enabled' => true,
+                'ttl' => 3600,
+                'store' => null,
+            ],
+
+            // Subdomain fallback when domain isn't found
+            'subdomain_fallback' => [
+                'enabled' => true,
+                'domain' => env('APP_DOMAIN', 'example.com'),
+                'pattern' => '[a-z0-9][a-z0-9-]*',
+            ],
+
+            // DNS record type tenants should use
+            'dns' => [
+                'type' => 'cname', // 'cname' or 'a'
+
+                // For CNAME records - hosts that should be pointed to
+                // Supports placeholders: {tenancy}, {Tenancy}, {TENANCY}, {resolver}, {Resolver}, {RESOLVER}
+                'hosts' => [
+                    'domains.{tenancy}.example.com',
+                ],
+
+                // For A records - IP addresses that should be pointed to
+                'ips' => [
+                    // '203.0.113.50',
+                    // '203.0.113.51',
+                ],
+            ],
+
+            // Domain ownership verification (TXT record)
+            'verification' => [
+                'enabled' => true,
+                'prefix' => '_sprout-verify', // TXT record: _sprout-verify.customdomain.com
+            ],
+
+            // SSL certificate provisioning (HTTP-01 challenge)
+            'ssl' => [
+                'enabled' => true,
+                'driver' => 'letsencrypt', // 'letsencrypt', 'certbot', 'manual'
+
+                'letsencrypt' => [
+                    'directory' => 'production', // or 'staging'
+                    'email' => env('CANOPY_SSL_EMAIL'),
+                    'storage' => storage_path('canopy/ssl'),
+                    // How to serve HTTP-01 challenge responses
+                    'challenge' => 'route', // 'route' or 'file'
+                    'challenge_path' => public_path('.well-known/acme-challenge'),
+                ],
+
+                'certbot' => [
+                    'binary' => '/usr/bin/certbot',
+                    'webroot' => public_path(),
+                ],
+            ],
+        ],
+
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Unknown Domain Handling
+    |--------------------------------------------------------------------------
+    |
+    | How to handle requests to domains that aren't registered and don't
+    | match the subdomain fallback pattern.
+    |
+    */
+
+    'fallback' => [
+        'strategy' => 'abort', // 'abort', 'redirect', 'handler'
+        'status' => 404,
+        'redirect_url' => null,
+        'handler' => null, // App\Http\Handlers\UnknownDomainHandler::class
+    ],
+
+];
+```
 
 ## Detailed Design
 
 ### Domain Resolution Flow
 
-Canopy introduces a two-step resolution process:
+Canopy introduces a two-step resolution process with subdomain fallback (configured per-repository):
 
 ```
-Request (acme.com)
+Request (hostname)
        │
        ▼
-┌─────────────────┐
-│ DomainProvider  │ ──→ Find Domain by hostname
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│     Domain      │ ──→ Contains tenant key
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│ TenantProvider  │ ──→ Find Tenant by key
-└────────┬────────┘
-         │
-         ▼
-      Tenant
+┌─────────────────────────────────┐
+│     DomainRepository lookup     │
+│   Is hostname a custom domain?  │
+└────────┬───────────────┬────────┘
+         │               │
+      Found          Not found
+         │               │
+         ▼               ▼
+┌─────────────────┐  ┌────────────────────────┐
+│ Return tenant   │  │  Subdomain fallback    │
+│ key from Domain │  │  (if enabled for       │
+└─────────────────┘  │   this repository)      │
+                     └───────┬───────┬────────┘
+                             │       │
+                        Matched   No match
+                             │       │
+                             ▼       ▼
+                     Return subdomain  Unknown domain
+                     as identifier     handling
 ```
 
 This indirection (Domain → tenant key → Tenant) is intentional:
 
 - Domains are a separate concern from tenants
 - A tenant can have multiple domains
-- Domains can have their own attributes (primary, verified, SSL status)
+- Domains can have their own attributes (primary, verified, validated, SSL status)
 - The domain lookup can be optimised/cached independently
+- **Tenants retain their identifier** — Since domains reference tenants by key (not replacing the identifier), tenants
+  can still be identified via subdomain fallback using their original identifier. A tenant with identifier `acme` can
+  have custom domain `acme.com` while still being accessible at `acme.example.com`.
 
 ### Domain Model
 
@@ -91,9 +219,10 @@ class Domain extends Model
         'hostname',
         'tenant_key',
         'is_primary',
-        'is_fallback',
         'is_verified',
         'verified_at',
+        'is_validated',
+        'validated_at',
         'ssl_provisioned',
         'ssl_expires_at',
     ];
@@ -108,87 +237,328 @@ class Domain extends Model
 Key fields:
 
 - **hostname** — The full domain (e.g., `acme.com`, `app.globex.net`)
-- **tenant_key** — Reference to the tenant (not a foreign key, uses tenant's identifier)
+- **tenant_key** — Reference to the tenant (uses tenant's key, not foreign key)
 - **is_primary** — Whether this is the tenant's primary domain (used for URL generation)
-- **is_fallback** — Whether unverified requests should fall back to this domain
-- **is_verified** — Whether domain ownership has been verified
+- **is_verified** — Whether domain ownership has been verified via TXT record
+- **is_validated** — Whether DNS records (A/CNAME) are correctly configured
 - **ssl_provisioned** / **ssl_expires_at** — SSL certificate status
 
-### Domain Provider
+### Domain Repository
 
-The `DomainProvider` interface abstracts domain lookup:
+The `DomainRepository` interface handles domain lifecycle management:
 
 ```php
-interface DomainProvider
+interface DomainRepository
 {
-    public function findByHostname(string $hostname): ?Domain;
+    /**
+     * Create a new domain record.
+     */
+    public function create(string $domainName, Tenancy $tenancy, Tenant $tenant): Domain;
+
+    /**
+     * Retrieve a domain record by its name.
+     */
+    public function retrieveByName(string $domainName): ?Domain;
+
+    /**
+     * Retrieve all domain records for a tenant.
+     */
+    public function retrieveForTenant(Tenant $tenant): Collection;
 }
 ```
 
-Canopy ships with an Eloquent implementation, but users can implement custom providers (e.g., for external domain
-management systems, caching layers, etc.).
+Unlike `TenantProvider` (which is read-only — tenants are managed by the user), `DomainRepository` handles full
+lifecycle management since domains are managed by Canopy.
 
-```php
-// config/sprout.php
-'canopy' => [
-    'provider' => [
-        'driver' => 'eloquent',
-        'model' => App\Models\Domain::class,
-        'cache' => [
-            'enabled' => true,
-            'ttl' => 3600,
-            'store' => null, // Use default cache store
-        ],
-    ],
-],
-```
+Canopy ships with an Eloquent implementation, but users can implement custom repositories (e.g., for external domain
+management systems, caching layers, etc.).
 
 ### Resolver Integration
 
-Canopy provides a `domain` identity resolver that plugs into Core:
+Canopy provides a `domain` identity resolver that implements `IdentityResolver` and `IdentityResolverUsesParameters`.
+The resolver uses a route parameter that captures the entire hostname, allowing both custom domains and subdomains to
+work with the same route definition.
 
 ```php
-// config/sprout.php
-'tenancies' => [
-    'default' => [
-        'resolver' => 'domain',
-        // ...
-    ],
-],
-
+// config/sprout/resolvers.php (or within multitenancy.resolvers)
 'resolvers' => [
     'domain' => [
         'driver' => 'domain',
-        'provider' => 'eloquent',
+        'repository' => 'default', // References canopy.repositories.default
     ],
 ],
 ```
 
-The resolver:
+The repository configuration (in `canopy.repositories.default`) controls:
 
-1. Extracts hostname from the request
-2. Queries the DomainProvider
-3. Returns the tenant key from the Domain (if found)
-4. Core's TenantProvider then loads the actual Tenant
+- Domain lookup (driver, model, caching)
+- Subdomain fallback (enabled, domain, pattern)
+- DNS settings (type, hosts/ips)
+- Verification (TXT record prefix)
+- SSL provisioning (driver, challenge method)
 
-### Fallback Handling
-
-When a request arrives for an unknown domain, Canopy needs to handle it gracefully. Options are configurable:
+Routes are defined with a domain parameter that captures the full hostname:
 
 ```php
-'canopy' => [
-    'fallback' => [
-        'strategy' => 'abort', // 'abort', 'redirect', 'handler'
-        
-        // For 'abort'
-        'status' => 404,
-        
-        // For 'redirect'
-        'url' => 'https://example.com',
-        
-        // For 'handler'
-        'handler' => App\Http\Handlers\UnknownDomainHandler::class,
+Route::tenanted(function () {
+    Route::get('/dashboard', DashboardController::class)->name('dashboard');
+}, 'domain', 'tenants');
+
+// This creates routes that match:
+// - acme.com/dashboard (custom domain)
+// - acme.example.com/dashboard (subdomain fallback)
+```
+
+The resolver tracks whether resolution succeeded via domain lookup or subdomain fallback, storing the actual resolution
+method on the tenancy via `resolvedVia()`.
+
+### URL Generation
+
+URL generation uses Sprout's existing `route()` method, which delegates to the resolver that identified the tenant:
+
+```php
+// Using the Sprout facade
+Sprout::route('dashboard', $tenant);
+
+// Using the helper
+sprout()->route('dashboard', $tenant);
+
+// With explicit resolver/tenancy
+sprout()->route('dashboard', $tenant, 'domain', 'tenants');
+```
+
+The method signature from `Sprout.php`:
+
+```php
+public function route(
+    string $name,
+    Tenant $tenant,
+    ?string $resolver = null,
+    ?string $tenancy = null,
+    array $parameters = [],
+    bool $absolute = true
+): string
+```
+
+When no resolver is specified, it uses the resolver that identified the current tenant (if available), falling back to
+the default. This means:
+
+- If tenant was identified via custom domain → URLs use the custom domain
+- If tenant was identified via subdomain fallback → URLs use the subdomain
+
+For generating URLs for a different tenant (not the current one), the resolver will check:
+
+1. Does the tenant have a primary custom domain? → Use it
+2. No custom domain? → Use subdomain format
+
+### DNS Verification vs Validation
+
+Canopy distinguishes between two DNS-related checks:
+
+**Verification** — Proving domain ownership via TXT record
+
+When a tenant claims a domain, they must add a TXT record to prove ownership:
+
+```
+_sprout-verify.acme.com TXT "sprout-verify=abc123token"
+```
+
+This prevents:
+
+- Someone pointing `competitor.com` at your servers and claiming it
+- Tenants claiming domains they don't control
+- DNS hijacking scenarios
+
+**Validation** — Confirming DNS records are correctly configured
+
+After verification, Canopy checks that the domain's DNS records point to the correct destination:
+
+For **CNAME** configuration:
+
+```
+acme.com CNAME domains.tenants.example.com
+```
+
+For **A** record configuration:
+
+```
+acme.com A 203.0.113.50
+acme.com A 203.0.113.51
+```
+
+Validation ensures traffic will actually reach the application before SSL provisioning begins.
+
+### DNS Configuration
+
+The `dns` section of each repository defines what DNS configuration tenants should use:
+
+```php
+'dns' => [
+    'type' => 'cname',
+    'hosts' => [
+        'domains.{tenancy}.example.com',
     ],
+],
+```
+
+The `hosts` array supports Sprout's placeholder system:
+
+| Placeholder  | Output                  | Example   |
+|--------------|-------------------------|-----------|
+| `{tenancy}`  | Lowercase tenancy name  | `tenants` |
+| `{Tenancy}`  | Ucfirst tenancy name    | `Tenants` |
+| `{TENANCY}`  | Uppercase tenancy name  | `TENANTS` |
+| `{resolver}` | Lowercase resolver name | `domain`  |
+| `{Resolver}` | Ucfirst resolver name   | `Domain`  |
+| `{RESOLVER}` | Uppercase resolver name | `DOMAIN`  |
+
+For A records:
+
+```php
+'dns' => [
+    'type' => 'a',
+    'ips' => [
+        '203.0.113.50',
+        '203.0.113.51',
+    ],
+],
+```
+
+### Verification Flow
+
+```php
+// Tenant registers a domain
+$domain = Domain::create([
+    'hostname' => 'acme.com',
+    'tenant_key' => $tenant->getTenantKey(),
+]);
+
+// Generate verification token
+$token = $domain->generateVerificationToken();
+
+// Display instructions to tenant:
+// "Add a TXT record: _sprout-verify.acme.com with value: sprout-verify={$token}"
+
+// Later, verify the domain
+$domain->verify(); // Checks DNS for TXT record
+
+// If successful:
+// $domain->is_verified = true
+// $domain->verified_at = now()
+```
+
+### Validation Flow
+
+```php
+// After verification, validate DNS configuration
+$domain->validate(); // Checks A or CNAME records
+
+// If successful:
+// $domain->is_validated = true
+// $domain->validated_at = now()
+
+// Validation can be re-run periodically to detect DNS changes
+```
+
+### SSL Certificate Management
+
+Canopy provides driver-based SSL certificate provisioning. Both the `letsencrypt` and `certbot` drivers use the HTTP-01
+challenge method, which requires serving a response at `/.well-known/acme-challenge/{token}`. SSL provisioning only
+proceeds after both verification and validation succeed.
+
+**Let's Encrypt Driver** — Uses the ACME protocol directly:
+
+```php
+'ssl' => [
+    'driver' => 'letsencrypt',
+    'letsencrypt' => [
+        'directory' => 'production',
+        'email' => 'ssl@example.com',
+        'storage' => storage_path('canopy/ssl'),
+        'challenge' => 'route',
+        'challenge_path' => public_path('.well-known/acme-challenge'),
+    ],
+],
+```
+
+The `challenge` option controls how HTTP-01 challenge responses are served:
+
+- **`route`** — Canopy registers a route to serve challenge responses dynamically. Challenge tokens are stored
+  temporarily and served via the application. This works in all environments but requires requests to reach the
+  application.
+
+- **`file`** — Canopy writes physical files to `challenge_path` (typically `public/.well-known/acme-challenge/`). This
+  allows the web server to serve challenges directly without hitting the application, which can be faster and works even
+  if the application is down. Requires write access to the public directory.
+
+**Certbot Driver** — Shells out to certbot:
+
+```php
+'ssl' => [
+    'driver' => 'certbot',
+    'certbot' => [
+        'binary' => '/usr/bin/certbot',
+        'webroot' => public_path(),
+    ],
+],
+```
+
+Certbot uses its own HTTP-01 challenge handling via the `--webroot` plugin, writing challenge files to the specified
+directory. The web server must be configured to serve files from `{webroot}/.well-known/acme-challenge/`.
+
+**Manual Driver** — For externally managed certificates:
+
+```php
+'ssl' => [
+    'driver' => 'manual',
+],
+```
+
+Tenants or admins upload certificates manually. Canopy tracks expiry for alerting but doesn't provision automatically.
+
+### HTTP-01 Challenge Handling
+
+For the `letsencrypt` driver with `challenge => 'route'`, Canopy registers a route:
+
+```php
+// Registered by Canopy automatically when challenge => 'route'
+Route::get('.well-known/acme-challenge/{token}', [AcmeChallengeController::class, 'show'])
+    ->withoutMiddleware(['*']); // No auth/tenant middleware
+```
+
+This route is tenant-agnostic — it serves challenge responses for any domain being verified.
+
+For `challenge => 'file'` or when using the `certbot` driver, ensure your web server is configured to serve static files
+from the `.well-known/acme-challenge` directory:
+
+```nginx
+# Nginx example
+location /.well-known/acme-challenge/ {
+    root /var/www/html/public;
+    try_files $uri =404;
+}
+```
+
+### Unknown Domain Handling
+
+When a request arrives for a domain that isn't registered and doesn't match the subdomain fallback:
+
+```php
+'fallback' => [
+    'strategy' => 'abort',
+    'status' => 404,
+],
+
+// Or redirect
+'fallback' => [
+    'strategy' => 'redirect',
+    'redirect_url' => 'https://example.com/invalid-domain',
+],
+
+// Or custom handler
+'fallback' => [
+    'strategy' => 'handler',
+    'handler' => App\Http\Handlers\UnknownDomainHandler::class,
 ],
 ```
 
@@ -199,235 +569,131 @@ class UnknownDomainHandler implements FallbackHandler
 {
     public function handle(Request $request, string $hostname): Response
     {
-        // Check if this looks like a tenant trying to set up a domain
-        // Show a "domain not configured" page
-        // Log for monitoring
+        // Log attempt
+        // Show "domain not configured" page
+        // Check if domain is pending verification
         // etc.
     }
 }
 ```
 
-### Domain Verification
+### Events
 
-Verification is optional but recommended. It prevents:
-
-- Someone pointing `competitor.com` at your servers and claiming it
-- Tenants claiming domains they don't control
-- DNS hijacking scenarios
-
-Canopy supports DNS record-based verification:
-
-**DNS Verification** — Tenant adds a TXT record:
-
-```
-_sprout.acme.com TXT "sprout-verify=abc123token"
-```
-
-Configuration:
-
-```php
-'canopy' => [
-    'verification' => [
-        'enabled' => true,
-        
-        // DNS-specific
-        'dns' => [
-            'prefix' => '_sprout',
-            'attribute' => 'sprout-verify',
-        ],
-    ],
-],
-```
-
-Verification can be triggered:
-
-```php
-// Programmatically
-$domain->verify();
-
-// Via Artisan
-php artisan sprout:domain:verify acme.com
-```
-
-Unverified domains can be configured to:
-
-- Not resolve at all (strict)
-- Resolve but with a flag accessible in the application
-- Resolve with a grace period
-
-### SSL Certificate Management
-
-Canopy provides driver-based SSL certificate provisioning:
-
-```php
-'canopy' => [
-    'ssl' => [
-        'enabled' => true,
-        'driver' => 'letsencrypt', // 'letsencrypt', 'certbot', 'manual', or custom
-        
-        'letsencrypt' => [
-            'directory' => 'production', // or 'staging'
-            'email' => 'ssl@example.com',
-            'storage' => storage_path('ssl'),
-        ],
-        
-        'certbot' => [
-            'binary' => '/usr/bin/certbot',
-            'webroot' => public_path(),
-        ],
-    ],
-],
-```
-
-**Let's Encrypt Driver** — Uses the ACME protocol directly:
-
-- Handles HTTP-01 challenges via `.well-known/acme-challenge` routes
-- Stores certificates in configurable location
-- Tracks expiry and handles renewal
-
-**Certbot Driver** — Shells out to certbot:
-
-- For environments where certbot is already installed/configured
-- Sprout manages the webroot challenge files
-- Certbot handles the actual certificate operations
-
-**Manual Driver** — For externally managed certificates:
-
-- Tenants or admins upload certificates
-- Canopy tracks expiry for alerting
-- No automatic provisioning
-
-The SSL subsystem provides routes/files for challenges:
-
-```php
-// Option 1: Route-based (Canopy registers this)
-Route::get('.well-known/acme-challenge/{token}', [AcmeChallengeController::class, 'show']);
-
-// Option 2: File-based (Canopy writes to public directory)
-// Files written to public/.well-known/acme-challenge/
-```
-
-### URL Generation
-
-When generating URLs for a tenant, Canopy uses the primary domain:
-
-```php
-// Get URL for current tenant
-sprout_url('/dashboard');
-// → https://acme.com/dashboard
-
-// Get URL for specific tenant
-sprout_url('/dashboard', $tenant);
-// → https://globex.net/dashboard
-
-// Falls back to configured app URL if no domain
-```
+| Event                      | When                                |
+|----------------------------|-------------------------------------|
+| `DomainCreated`            | A new domain is registered          |
+| `DomainVerified`           | Domain verification (TXT) succeeded |
+| `DomainVerificationFailed` | Domain verification failed          |
+| `DomainValidated`          | DNS validation (A/CNAME) succeeded  |
+| `DomainValidationFailed`   | DNS validation failed               |
+| `DomainDeleted`            | A domain is removed                 |
+| `SslProvisioning`          | SSL provisioning is starting        |
+| `SslProvisioned`           | SSL certificate obtained            |
+| `SslRenewalDue`            | Certificate approaching expiry      |
+| `SslRenewed`               | Certificate renewed                 |
+| `SslProvisioningFailed`    | SSL provisioning failed             |
 
 ### Artisan Commands
 
-| Command                 | Description                                |
-|-------------------------|--------------------------------------------|
-| `sprout:domain:list`    | List all domains (optionally for a tenant) |
-| `sprout:domain:add`     | Add a domain to a tenant                   |
-| `sprout:domain:remove`  | Remove a domain                            |
-| `sprout:domain:verify`  | Verify domain ownership                    |
-| `sprout:domain:primary` | Set a domain as primary                    |
-| `sprout:ssl:provision`  | Provision SSL for a domain                 |
-| `sprout:ssl:renew`      | Renew expiring certificates                |
-| `sprout:ssl:status`     | Show SSL status for domains                |
-
-### Events
-
-| Event                      | When                           |
-|----------------------------|--------------------------------|
-| `DomainCreated`            | A new domain is registered     |
-| `DomainVerified`           | Domain verification succeeded  |
-| `DomainVerificationFailed` | Domain verification failed     |
-| `DomainDeleted`            | A domain is removed            |
-| `SslProvisioning`          | SSL provisioning is starting   |
-| `SslProvisioned`           | SSL certificate obtained       |
-| `SslRenewalDue`            | Certificate approaching expiry |
-| `SslRenewed`               | Certificate renewed            |
+| Command                  | Description                                |
+|--------------------------|--------------------------------------------|
+| `sprout:domain:list`     | List all domains (optionally for a tenant) |
+| `sprout:domain:add`      | Add a domain to a tenant                   |
+| `sprout:domain:remove`   | Remove a domain                            |
+| `sprout:domain:verify`   | Verify domain ownership (TXT record)       |
+| `sprout:domain:validate` | Validate DNS configuration (A/CNAME)       |
+| `sprout:domain:primary`  | Set a domain as primary                    |
+| `sprout:ssl:provision`   | Provision SSL for a domain                 |
+| `sprout:ssl:renew`       | Renew expiring certificates                |
+| `sprout:ssl:status`      | Show SSL status for domains                |
 
 ## Open Questions
 
-### Challenge Route vs File
+### HTTP-01 Challenge Method Default
 
-For ACME HTTP-01 challenges, should Canopy:
+Should the default be `route` or `file` for the Let's Encrypt driver?
 
-- Register a route that serves challenge responses from storage
-- Write actual files to the public directory
+- **`route`** is simpler (no filesystem permissions needed) but requires the app to handle every challenge request
+- **`file`** is faster and more resilient but requires write access to public directory
 
-Routes are cleaner but require the application to handle every request. Files work with static file serving but require
-write access to public directory.
+Likely `route` as default since it works in more environments out of the box.
 
-### Certificate Storage
-
-Where should certificates be stored?
-
-- Filesystem (simple, but not shared in load-balanced setups)
-- Database (shared, but certificates are large-ish)
-- External service (e.g., AWS Certificate Manager, Cloudflare)
-
-May need to support multiple storage backends.
-
-### Wildcard Certificates
-
-Should Canopy support wildcard certificates for tenants who want `*.acme.com`? This requires DNS-01 challenges which are
-more complex (need DNS API access).
-
-### Certificate Renewal Scheduling
-
-How should automatic renewal be triggered?
-
-- Scheduled command in the user's cron (`sprout:ssl:renew`)
-- Background job dispatched when checking expiry
-- Event-driven based on `SslRenewalDue` event
-
-### Multi-Server Deployments
+### Certificate Storage in Distributed Environments
 
 In load-balanced environments:
 
+- Certificates need to be accessible from all servers
 - ACME challenges need to be served from any server
-- Certificates need to be distributed to all servers
-- Renewal should only happen on one server
 
-This may be out of scope (infrastructure concern), but needs consideration.
+Options:
+
+- Store certificates in shared filesystem (NFS, EFS)
+- Store in database (blob storage)
+- Use external certificate manager (AWS ACM, Cloudflare)
+- Document as infrastructure concern, out of scope
+
+### Wildcard Certificate Support
+
+Should Canopy support wildcard certificates for tenants wanting `*.acme.com`? This requires DNS-01 challenges which need
+DNS API access. Likely out of scope for initial implementation.
+
+### Verification Token Generation
+
+How should verification tokens be generated and stored?
+
+- Random string per domain
+- HMAC based on domain + tenant + secret (stateless)
+- Stored in domain record vs computed on demand
+
+### Re-validation Scheduling
+
+How often should DNS validation be re-checked?
+
+- On every request (expensive)
+- Scheduled job (e.g., daily)
+- Only on SSL renewal
+- Manual only
+
+### Domain Transfer Between Tenants
+
+What happens if a domain needs to move between tenants?
+
+- Require re-verification
+- Allow admin override
+- Soft delete and recreate
 
 ## Alternatives Considered
 
-### Using Tenant Identifier as Domain
+### HTTP-based Verification
 
-Could store domains directly on the Tenant model or use the identifier field. Rejected because:
+Could verify domains by checking for a file at `https://domain/.well-known/sprout-verification.txt`. Rejected because:
 
-- Tenants need multiple domains
-- Domains have their own attributes (verified, SSL status, etc.)
-- Separation of concerns — domains are a Canopy concept
-- Tenants should always have a fallback method incase domains are not accessible
+- Requires domain to already be pointing to us
+- Chicken-and-egg problem with SSL
+- DNS TXT is standard practice (Google, Let's Encrypt, etc.)
 
 ### External Domain Management Only
 
-Could require users to manage domains entirely outside Sprout (e.g., in their own tables, external service). Rejected
-because:
+Could require users to manage domains entirely outside Sprout. Rejected because:
 
 - Tight integration with resolution is valuable
 - SSL provisioning needs domain awareness
 - Verification workflows are common enough to include
 
-### Single SSL Driver
+### Separate Stacked Resolver for Fallback
 
-Could only support Let's Encrypt or only certbot. Rejected because:
+Initially considered using RFC-0003's StackedResolver for domain + subdomain fallback. Rejected because:
 
-- Different environments have different constraints
-- Enterprise users often have existing certificate management
-- Flexibility is a Sprout principle
+- Added complexity for a common use case
+- Both use same route parameter (full hostname)
+- Built-in fallback is simpler and sufficient
 
 ## Implementation Plan
 
-1. **Domain model and provider** — Core domain storage and lookup
-2. **Resolver integration** — Hook into Core's identity resolution
-3. **Fallback handling** — Unknown domain responses
-4. **Verification system** — DNS and HTTP verification drivers
+1. **Domain model and repository** — Core domain storage and lookup
+2. **Resolver with subdomain fallback** — Identity resolution with built-in fallback
+3. **DNS verification** — TXT record ownership verification
+4. **DNS validation** — A/CNAME record configuration validation
 5. **SSL provisioning** — Let's Encrypt and certbot drivers
-6. **URL generation** — Helpers for domain-aware URLs
-7. **Artisan commands** — Management tooling
+6. **Artisan commands** — Management tooling
+7. **Events** — Lifecycle events for domain management
