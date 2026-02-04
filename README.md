@@ -4,15 +4,27 @@ This repository contains the technical specification, architecture documentation
 
 ### [Architecture](./architecture/)
 
-Technical documentation describing how Sprout works internally. This includes component diagrams, data flows, and
-explanations of core concepts.
+Technical documentation describing how Sprout works internally. These are design specification documents that explain
+concepts, design rationale, and how parts of the system relate to each other.
 
-- [Overview](./architecture/overview.md) — High-level architecture and design principles
-- [Resolution Hooks](./architecture/resolution-hooks.md) — How and when Sprout resolves tenant identities
-- [Identity Resolvers](./architecture/identity-resolvers.md) — How sprout resolves tenant identities
-- [Tenancy Lifecycle](./architecture/tenancy-lifecycle.md) — Events, bootstrappers, and state changes during tenant activation
-- [Service Overrides](./architecture/service-overrides.md) — How Sprout integrates with Laravel's service container
-- [Components](./architecture/components/) — Detailed documentation for each component (Core, Bud, Seedling, Canopy)
+| Document                                                   | Description                                   |
+|------------------------------------------------------------|-----------------------------------------------|
+| [Overview](./architecture/overview.md)                     | High-level architecture and design principles |
+| [Tenancy](./architecture/tenancy.md)                       | The container for tenant state                |
+| [Tenant Providers](./architecture/tenant-providers.md)     | Loading tenants from storage                  |
+| [Identity Resolvers](./architecture/identity-resolvers.md) | Extracting tenant identity from requests      |
+| [Resolution Hooks](./architecture/resolution-hooks.md)     | When and how tenant resolution occurs         |
+| [Tenancy Lifecycle](./architecture/tenancy-lifecycle.md)   | Events and listeners during tenant activation |
+| [Service Overrides](./architecture/service-overrides.md)   | Making Laravel services tenant-aware          |
+
+#### Component Documentation
+
+Detailed documentation for each Sprout package:
+
+- [Core](./architecture/components/core/) — Foundation package
+- [Bud](./architecture/components/bud/) — Tenant-specific configuration
+- [Seedling](./architecture/components/seedling/) — Multi-database support
+- [Canopy](./architecture/components/canopy/) — Domain-based identification
 
 ### [RFCs](./rfcs/)
 
