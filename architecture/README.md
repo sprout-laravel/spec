@@ -15,7 +15,7 @@ and implementation details that make up the system.
 | [Resolution Hooks](./resolution-hooks.md)      | When and how tenant resolution occurs         | Complete |
 | [Identity Resolvers](./identity-resolvers.md)  | Extracting tenant identity from requests      | Complete |
 | [Tenancy Lifecycle](./tenancy-lifecycle.md)    | Events and listeners during tenant activation | Complete |
-| [Service Overrides](./service-overrides.md)    | Making Laravel services tenant-aware          | Stub     |
+| [Service Overrides](./service-overrides.md)    | Making Laravel services tenant-aware          | Complete |
 
 ### Component Documentation
 
