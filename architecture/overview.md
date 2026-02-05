@@ -54,14 +54,19 @@ Sprout v2 is organised into four packages within a monorepo:
 The foundation that all other packages build on. Handles:
 
 - [Tenancy](./tenancy.md) — Managing tenant state
-- [Identity resolution](./identity-resolvers.md) — Extracting tenant identity from requests
-- [Service overrides](./service-overrides.md) — Making Laravel services tenant-aware
-- [Eloquent integration](./eloquent-integration.md) — Tenant-aware models
+- [Tenant Providers](./tenant-providers.md) — Loading tenants from storage
+- [Identity Resolvers](./identity-resolvers.md) — Extracting tenant identity from requests
+- [Resolution Hooks](./resolution-hooks.md) — When tenant resolution occurs
+- [Tenancy Lifecycle](./tenancy-lifecycle.md) — Events during tenant activation
+- [Service Overrides](./service-overrides.md) — Making Laravel services tenant-aware
+- [Eloquent Integration](./eloquent-integration.md) — Tenant-aware models
+- [Managers & Factories](./managers-factories.md) — Driver-based extensibility pattern
+- [Exceptions](./exceptions.md) — Error handling and exception hierarchy
 
-### Bud
+### [Bud](./components/bud.md)
 
-Manages tenant-specific configuration for Laravel's driver-based services. Lets each tenant have their own mail, cache,
-filesystem, or queue settings.
+Manages tenant-specific configuration for Laravel's driver-based services. Lets each tenant have their own cache,
+database, filesystem, mail, broadcast, or auth settings — with configuration stored per-tenant and injected at runtime.
 
 ### Seedling
 
@@ -137,9 +142,3 @@ code:
 - **Custom Tenant Providers** — Load tenants from any data source
 - **Custom Service Overrides** — Make additional Laravel services tenant-aware
 - **Event Listeners** — React to [tenancy lifecycle events](./tenancy-lifecycle.md)
-
-## Further Reading
-
-- [Resolution Hooks](./resolution-hooks.md) — When tenant resolution occurs
-- [Tenancy Lifecycle](./tenancy-lifecycle.md) — Events during tenant activation
-- [Managers & Factories](./managers-factories.md) — The extensibility pattern
