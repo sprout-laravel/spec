@@ -40,5 +40,6 @@ You don't need an RFC for:
 | [0001](./0001-seedling.md)                    | Seedling — Multi-Database Support           | Draft        | 2026-02-04 |
 | [0002](./0002-canopy.md)                      | Canopy — Domain-Based Tenant Identification | Draft        | 2026-02-04 |
 | [0003](./0003-stacked-identity-resolution.md) | Stacked Identity Resolution                 | Under Review | 2026-02-04 |
+| [0004](./0004-propagator.md)                  | Propagator — Developer Toolkit              | Draft        | 2026-02-05 |
 
 <!-- Add new RFCs above this line -->
