@@ -20,11 +20,10 @@ concepts, design rationale, and how parts of the system relate to each other.
 | [Managers & Factories](./architecture/managers-factories.md) | Driver-based factory pattern for extensibility |
 | [Exceptions](./architecture/exceptions.md)                     | Error handling and exception hierarchy |
 
-#### Component Documentation
+#### Extension Packages
 
-Detailed documentation for each Sprout package:
+The documents above cover Sprout's core architecture. The following extension packages add additional capabilities:
 
-- [Core](./architecture/components/core/) — Foundation package
 - [Bud](./architecture/components/bud/) — Tenant-specific configuration
 - [Seedling](./architecture/components/seedling/) — Multi-database support
 - [Canopy](./architecture/components/canopy/) — Domain-based identification
