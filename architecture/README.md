@@ -19,6 +19,7 @@ and implementation details that make up the system.
 | [Tenancy Lifecycle](./tenancy-lifecycle.md)    | Events and listeners during tenant activation | Complete |
 | [Service Overrides](./service-overrides.md)    | Making Laravel services tenant-aware          | Complete |
 | [Eloquent Integration](./eloquent-integration.md) | Tenant-aware models and automatic scoping  | Complete |
+| [Middleware & Routing](./middleware-routing.md) | Route macros, middleware, and request flow    | Complete |
 
 ### Component Documentation
 

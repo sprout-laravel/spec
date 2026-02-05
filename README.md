@@ -17,6 +17,7 @@ concepts, design rationale, and how parts of the system relate to each other.
 | [Tenancy Lifecycle](./architecture/tenancy-lifecycle.md)   | Events and listeners during tenant activation |
 | [Service Overrides](./architecture/service-overrides.md)   | Making Laravel services tenant-aware          |
 | [Eloquent Integration](./architecture/eloquent-integration.md) | Tenant-aware models and automatic scoping |
+| [Middleware & Routing](./architecture/middleware-routing.md) | Route macros, middleware, and request flow |
 
 #### Component Documentation
 
