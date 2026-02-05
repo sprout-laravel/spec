@@ -20,6 +20,7 @@ and implementation details that make up the system.
 | [Service Overrides](./service-overrides.md)    | Making Laravel services tenant-aware          | Complete |
 | [Eloquent Integration](./eloquent-integration.md) | Tenant-aware models and automatic scoping  | Complete |
 | [Middleware & Routing](./middleware-routing.md) | Route macros, middleware, and request flow    | Complete |
+| [Managers & Factories](./managers-factories.md) | Driver-based factory pattern for extensibility | Complete |
 
 ### Component Documentation
 
