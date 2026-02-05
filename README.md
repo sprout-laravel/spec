@@ -16,6 +16,7 @@ concepts, design rationale, and how parts of the system relate to each other.
 | [Resolution Hooks](./architecture/resolution-hooks.md)     | When and how tenant resolution occurs         |
 | [Tenancy Lifecycle](./architecture/tenancy-lifecycle.md)   | Events and listeners during tenant activation |
 | [Service Overrides](./architecture/service-overrides.md)   | Making Laravel services tenant-aware          |
+| [Eloquent Integration](./architecture/eloquent-integration.md) | Tenant-aware models and automatic scoping |
 
 #### Component Documentation
 

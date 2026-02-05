@@ -18,6 +18,7 @@ and implementation details that make up the system.
 | [Resolution Hooks](./resolution-hooks.md)      | When and how tenant resolution occurs         | Complete |
 | [Tenancy Lifecycle](./tenancy-lifecycle.md)    | Events and listeners during tenant activation | Complete |
 | [Service Overrides](./service-overrides.md)    | Making Laravel services tenant-aware          | Complete |
+| [Eloquent Integration](./eloquent-integration.md) | Tenant-aware models and automatic scoping  | Complete |
 
 ### Component Documentation
 
