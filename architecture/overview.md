@@ -27,9 +27,9 @@ need subdomain-based tenancy, path-based identification, or custom resolution lo
 Each component has a clear responsibility and well-defined boundaries. This makes the codebase easier to understand,
 test, and extend.
 
-## Component Overview
+## Package Overview
 
-Sprout v2 consolidates functionality into a single package with four logical components:
+Sprout v2 is organised into four packages within a monorepo:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -37,10 +37,10 @@ Sprout v2 consolidates functionality into a single package with four logical com
 ├─────────────────┬─────────────────┬─────────────────┬───────────┤
 │      Core       │       Bud       │    Seedling     │  Canopy   │
 ├─────────────────┼─────────────────┼─────────────────┼───────────┤
-│ • Tenancy       │ • Configuration │ • Database      │ • Domain  │
-│ • Resolution    │ • Services      │ • Migrations    │ • Routing │
-│ • Context       │ • Connections   │ • Seeding       │ • SSL     │
-│ • Events        │ • Overrides     │                 │           │
+│ • Tenancy       │ • Tenant config │ • Multi-database│ • Domains │
+│ • Resolution    │ • Driver config │ • Migrations    │ • SSL     │
+│ • Overrides     │                 │ • Provisioning  │           │
+│ • Eloquent      │                 │                 │           │
 └─────────────────┴─────────────────┴─────────────────┴───────────┘
                               │
                               ▼
@@ -51,31 +51,27 @@ Sprout v2 consolidates functionality into a single package with four logical com
 
 ### Core
 
-The foundation of Sprout. Handles tenant identification, resolution, and context management. All other components build
-on top of Core.
+The foundation that all other packages build on. Handles:
 
-See [Components: Core](./components/core/) for details.
+- [Tenancy](./tenancy.md) — Managing tenant state
+- [Identity resolution](./identity-resolvers.md) — Extracting tenant identity from requests
+- [Service overrides](./service-overrides.md) — Making Laravel services tenant-aware
+- [Eloquent integration](./eloquent-integration.md) — Tenant-aware models
 
 ### Bud
 
-Manages tenant-specific configuration. Provides a clean way to override Laravel's driver-based services (mail, cache,
-filesystem, etc.) on a per-tenant basis.
-
-See [Components: Bud](./components/bud/) for details.
+Manages tenant-specific configuration for Laravel's driver-based services. Lets each tenant have their own mail, cache,
+filesystem, or queue settings.
 
 ### Seedling
 
-Handles tenant-specific databases. Includes support for separate database connections per tenant, tenant-scoped
-migrations, and database provisioning.
-
-See [Components: Seedling](./components/seedling/) for details.
+Handles tenant-specific databases. Provides separate database connections per tenant, tenant-scoped migrations, and
+database provisioning.
 
 ### Canopy
 
-Provides domain-based tenant identification. Includes support for custom domains, SSL certificate management, and domain
+Provides domain-based tenant identification. Supports custom domains per tenant, SSL certificate management, and domain
 verification.
-
-See [Components: Canopy](./components/canopy/) for details.
 
 ## Request Lifecycle
 
@@ -87,13 +83,13 @@ Request
    ▼
 ┌──────────────────────────────────┐
 │         Route Matching           │
-│   (Identity resolved if eager)   │
+│  (Routing hook: resolve early)   │
 └──────────────────────────────────┘
    │
    ▼
 ┌──────────────────────────────────┐
 │      Tenancy Middleware          │
-│   (Identity resolved if lazy)    │
+│ (Middleware hook: resolve here)  │
 └──────────────────────────────────┘
    │
    ▼
@@ -106,7 +102,6 @@ Request
 ┌──────────────────────────────────┐
 │      Context Activation          │
 │   • Service overrides applied    │
-│   • Configuration loaded         │
 │   • Events dispatched            │
 └──────────────────────────────────┘
    │
@@ -127,19 +122,24 @@ Request
 Response
 ```
 
-See [Tenancy Lifecycle](./tenancy-lifecycle.md) for a detailed explanation.
+Resolution can happen at two points — the [routing hook or the middleware hook](./resolution-hooks.md). The routing hook
+fires earlier (before middleware), which is useful when service overrides need to configure services before middleware
+runs. The middleware hook fires later, which is required for session-based resolution.
+
+See [Tenancy Lifecycle](./tenancy-lifecycle.md) for details on what happens after resolution.
 
 ## Extension Points
 
-Sprout provides several extension points for customisation:
+Sprout uses a [driver-based factory pattern](./managers-factories.md) that enables extension without modifying core
+code:
 
-- **Custom Identity Resolvers** — Implement your own tenant identification logic
+- **Custom Identity Resolvers** — Register new ways to identify tenants from requests
 - **Custom Tenant Providers** — Load tenants from any data source
-- **Service Override Drivers** — Add support for additional Laravel services
-- **Event Listeners** — React to tenancy lifecycle events
+- **Custom Service Overrides** — Make additional Laravel services tenant-aware
+- **Event Listeners** — React to [tenancy lifecycle events](./tenancy-lifecycle.md)
 
 ## Further Reading
 
-- [Tenancy Lifecycle](./tenancy-lifecycle.md)
-- [Service Overrides](./service-overrides.md)
-- [Component Documentation](./components/)
+- [Resolution Hooks](./resolution-hooks.md) — When tenant resolution occurs
+- [Tenancy Lifecycle](./tenancy-lifecycle.md) — Events during tenant activation
+- [Managers & Factories](./managers-factories.md) — The extensibility pattern
