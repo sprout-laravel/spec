@@ -26,6 +26,6 @@ and implementation details that make up the system.
 
 The documents above cover Sprout's core architecture. The following extension packages add additional capabilities:
 
-- [Bud](./components/bud/) — Tenant-specific configuration
+- [Bud](./components/bud.md) — Tenant-specific configuration
 - [Seedling](./components/seedling/) — Multi-database support
 - [Canopy](./components/canopy/) — Domain-based identification
