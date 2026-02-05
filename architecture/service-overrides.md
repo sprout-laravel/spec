@@ -145,10 +145,16 @@ cache isolation. A web tenancy might need everything.
 When the application boots, overrides are created from configuration. Each configured service gets an override instance.
 Bootable overrides are noted for the boot phase.
 
+After each override is registered, a `ServiceOverrideRegistered` event is dispatched. This allows other parts of the
+system to react to override registration — useful for packages that need to know which overrides are active.
+
 ### Boot (Application Booted)
 
 After all service providers finish, bootable overrides run their `boot()` method. This is where they extend managers,
 register drivers, and replace bindings.
+
+After each bootable override completes its boot phase, a `ServiceOverrideBooted` event is dispatched. Like the
+registration event, this allows other code to react to the override being ready.
 
 ### Setup (Tenant Activated)
 
