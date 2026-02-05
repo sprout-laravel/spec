@@ -1,101 +1,78 @@
 # Managers & Factories
 
-Sprout uses a consistent factory pattern across its core components. Managers create, cache, and provide access to
-configured instances of tenancies, providers, resolvers, and overrides. This pattern enables extensibility without
-modifying core code.
+Sprout uses a driver-based factory pattern across its core components. This pattern enables third-party packages to
+extend Sprout with custom implementations without modifying core code.
 
-## The Pattern
+## Why This Pattern
 
-Each manager is both a **factory** (creates instances from configuration) and a **registry** (caches and retrieves
-them). The pattern solves several problems:
+Sprout needs to support multiple implementations of key concepts:
 
-- **Multiple implementations** — Subdomain, path, header resolvers; Eloquent, database providers
-- **Configuration-driven** — Instances are created based on config, not hardcoded
-- **Extensibility** — Third-party packages can register custom drivers
-- **Lazy creation** — Instances are only created when first requested
-- **Instance reuse** — Once created, instances are cached and reused
+- **Tenant providers** — Eloquent, raw database, external APIs
+- **Identity resolvers** — Subdomain, path, header, cookie, session, custom
+- **Service overrides** — Cache, session, filesystem, and more
 
-## Managers Overview
+Rather than hardcoding these, Sprout uses configuration-driven factories. You specify a driver name in config, and the
+factory creates the appropriate implementation. This keeps the core flexible and allows packages like Bud, Seedling, and
+Canopy to register their own drivers.
 
-Sprout has four managers:
+## The BaseFactory Pattern
 
-| Manager                                            | Creates                    | Config Key               |
-|----------------------------------------------------|----------------------------|--------------------------|
-| [TenancyManager](./tenancy.md)                     | Tenancy instances          | `multitenancy.tenancies` |
-| [TenantProviderManager](./tenant-providers.md)     | TenantProvider instances   | `multitenancy.providers` |
-| [IdentityResolverManager](./identity-resolvers.md) | IdentityResolver instances | `multitenancy.resolvers` |
-| ServiceOverrideManager                             | ServiceOverride instances  | `multitenancy.overrides` |
+Three of Sprout's managers extend a common `BaseFactory` class. This isn't just code reuse — it's a deliberate design
+decision that ensures consistency across the system.
 
-The first three extend `BaseFactory` and share the same creation pattern. `ServiceOverrideManager` handles overrides
-differently due to their lifecycle requirements.
+The base factory provides:
 
-## BaseFactory
+- **Configuration-driven creation** — Read a config section, find the driver, create the instance
+- **Instance caching** — Create once, return the same instance on subsequent requests
+- **Custom driver registration** — Allow third parties to register drivers via closures
+- **Dependency injection** — Automatically inject the app container and Sprout instance into created objects
 
-The `BaseFactory` class provides the core factory logic that managers inherit:
+Subclasses only need to implement two methods:
 
-```php
-abstract class BaseFactory
-{
-    protected static array $customCreators = [];  // Registered drivers
-    protected array $objects = [];                 // Instance cache
+- `getFactoryName()` — Returns the type name (e.g., `'provider'`, `'resolver'`)
+- `getConfigKey()` — Maps a name to its config path
 
-    abstract protected function getFactoryName(): string;
-    abstract protected function getConfigKey(string $name): string;
-}
-```
-
-Subclasses implement two methods:
-
-- **`getFactoryName()`** — Returns the type name (e.g., `'tenancy'`, `'provider'`, `'resolver'`)
-- **`getConfigKey()`** — Maps a name to its config path (e.g., `'tenants'` → `'multitenancy.providers.tenants'`)
+This means adding a new manager (as extension packages do) follows a predictable pattern. You extend `BaseFactory`,
+implement the two methods, add your driver creation methods, and the rest works automatically.
 
 ## Driver Resolution
 
-When you request an instance, the factory resolves it through a priority chain:
+When you request an instance (e.g., `$sprout->providers()->get('tenants')`), the factory resolves it through a priority
+chain:
 
-```
-get('subdomain')
-    ↓
-Check instance cache → return if exists
-    ↓
-Read config for 'subdomain'
-    ↓
-Get driver name from config (e.g., 'subdomain')
-    ↓
-1. Check custom creators → use if registered
-2. Look for create{Driver}{Type} method → use if exists
-3. Look for createDefault{Type} method → use if no driver specified
-4. Throw exception if nothing found
-    ↓
-Cache and return instance
-```
+1. **Check cache** — If this name was already resolved, return the cached instance
+2. **Read configuration** — Get the config for this name, including the `driver` value
+3. **Check custom creators** — If a third party registered a creator for this driver, use it
+4. **Check convention methods** — Look for a method like `createEloquentProvider()` for driver `eloquent`
+5. **Check default method** — If no driver specified, look for `createDefaultProvider()`
+6. **Throw exception** — If nothing matches, the configuration is invalid
 
-### Method Naming Convention
+This priority order is deliberate:
 
-Built-in drivers are created by conventionally-named methods:
+- **Custom creators first** means third parties can override built-in drivers if needed
+- **Convention methods** keep built-in driver code organised and discoverable
+- **Default methods** handle the case where config omits a driver entirely
+- **Caching** ensures the same instance is returned throughout a request
 
-```php
-// For driver 'eloquent' in TenantProviderManager:
-// Looks for: createEloquentProvider
-$method = 'create' . ucfirst($driver) . ucfirst($this->getFactoryName());
-```
+The convention for built-in methods is `create{Driver}{Type}()` — so `createEloquentProvider()`,
+`createSubdomainResolver()`, etc. This makes it easy to find how a driver is created and to add new built-in drivers.
 
-Examples:
+## The Four Managers
 
-| Manager                 | Driver      | Method                      |
-|-------------------------|-------------|-----------------------------|
-| TenantProviderManager   | `eloquent`  | `createEloquentProvider()`  |
-| TenantProviderManager   | `database`  | `createDatabaseProvider()`  |
-| IdentityResolverManager | `subdomain` | `createSubdomainResolver()` |
-| IdentityResolverManager | `path`      | `createPathResolver()`      |
-| IdentityResolverManager | `header`    | `createHeaderResolver()`    |
-| TenancyManager          | (default)   | `createDefaultTenancy()`    |
+| Manager | Creates | Config Key |
+|---------|---------|------------|
+| [TenancyManager](./tenancy.md) | Tenancy instances | `multitenancy.tenancies` |
+| [TenantProviderManager](./tenant-providers.md) | TenantProvider implementations | `multitenancy.providers` |
+| [IdentityResolverManager](./identity-resolvers.md) | IdentityResolver implementations | `multitenancy.resolvers` |
+| [ServiceOverrideManager](./service-overrides.md) | ServiceOverride implementations | `multitenancy.overrides` |
 
-This convention makes it easy to add new built-in drivers — just add a method following the pattern.
+The first three extend `BaseFactory`. `ServiceOverrideManager` is different — overrides have lifecycle requirements
+(setup/cleanup phases, bootable overrides) that don't fit the simple factory pattern. See
+[Service Overrides](./service-overrides.md) for details on why.
 
 ## Registering Custom Drivers
 
-Third-party packages or applications can register custom drivers:
+The primary extension point is `register()`. Third-party packages call this to add new drivers:
 
 ```php
 TenantProviderManager::register('api', function (Application $app, array $config, string $name) {
@@ -121,69 +98,24 @@ Once registered, the driver can be used in configuration:
 ],
 ```
 
-Custom creators take priority over built-in methods, allowing you to override default behaviour.
+Custom creators take priority over built-in drivers, allowing you to override default behaviour if needed.
 
-## Instance Caching
+## Built-in Driver Resolution
 
-Managers cache instances by name:
+For built-in drivers, the factory uses a naming convention. When you specify `'driver' => 'eloquent'` for a provider,
+the factory looks for a method called `createEloquentProvider()`. This convention makes it easy to add new built-in
+drivers — just add a method following the pattern.
 
-```php
-public function get(?string $name = null): object
-{
-    $name ??= $this->getDefaultName();
+| Manager | Driver | Method |
+|---------|--------|--------|
+| TenantProviderManager | `eloquent` | `createEloquentProvider()` |
+| TenantProviderManager | `database` | `createDatabaseProvider()` |
+| IdentityResolverManager | `subdomain` | `createSubdomainResolver()` |
+| IdentityResolverManager | `path` | `createPathResolver()` |
 
-    if (! isset($this->objects[$name])) {
-        $this->objects[$name] = $this->resolve($name);
-    }
+## Accessing Managers
 
-    return $this->objects[$name];
-}
-```
-
-This means:
-
-- First call creates and caches the instance
-- Subsequent calls return the cached instance
-- Each named configuration has its own cached instance
-- `flushResolved()` clears the cache if you need fresh instances
-
-## Post-Resolution Setup
-
-After creating an instance, the factory automatically injects common dependencies:
-
-```php
-protected function setupResolvedObject(object $object): object
-{
-    if (method_exists($object, 'setApp')) {
-        $object->setApp($this->app);
-    }
-
-    if (method_exists($object, 'setSprout')) {
-        $object->setSprout($this->app->make(Sprout::class));
-    }
-
-    return $object;
-}
-```
-
-Classes can use the `AwareOfApp` and `AwareOfSprout` traits to receive these injections:
-
-```php
-class CustomResolver extends BaseIdentityResolver
-{
-    use AwareOfApp, AwareOfSprout;
-
-    public function someMethod(): void
-    {
-        $this->getApp()->make(SomeService::class);
-        $this->getSprout()->tenancies()->get();
-    }
-}
-```
-
-## The Sprout Orchestrator
-
-The `Sprout` class composes all four managers and provides access to them:
+The `Sprout` class provides access to all managers:
 
 ```php
 $sprout = app(Sprout::class);
@@ -194,95 +126,27 @@ $sprout->tenancies();   // TenancyManager
 $sprout->overrides();   // ServiceOverrideManager
 ```
 
-This is the primary entry point for accessing Sprout's functionality. The service provider registers `Sprout` as a
-singleton, and the managers are accessed through it.
-
-## Configuration Structure
-
-The configuration mirrors the manager structure:
+From a manager, you can get specific instances:
 
 ```php
-return [
-    'defaults' => [
-        'tenancy'  => 'tenants',    // Default tenancy name
-        'provider' => 'tenants',    // Default provider name
-        'resolver' => 'subdomain',  // Default resolver name
-    ],
-
-    'tenancies' => [
-        'tenants' => [
-            'provider' => 'tenants',
-            'options'  => [...],
-        ],
-    ],
-
-    'providers' => [
-        'tenants' => [
-            'driver' => 'eloquent',
-            'model'  => Tenant::class,
-        ],
-    ],
-
-    'resolvers' => [
-        'subdomain' => [
-            'driver' => 'subdomain',
-            'domain' => env('TENANTED_DOMAIN'),
-        ],
-    ],
-
-    'overrides' => [...],
-];
+$provider = $sprout->providers()->get('tenants');
+$resolver = $sprout->resolvers()->get('subdomain');
 ```
 
-Each section defines named configurations. The `driver` key determines which creator method or custom closure handles
-instantiation.
+## Extension Packages
 
-## Extending Sprout
+This factory pattern is how Sprout's extension packages integrate:
 
-To add a custom driver:
+- **Bud** registers drivers for tenant-specific configuration
+- **Seedling** registers drivers for multi-database support
+- **Canopy** registers drivers for domain-based identification
 
-1. **Create the implementation** — Implement the appropriate contract (`TenantProvider`, `IdentityResolver`, etc.)
-2. **Register the driver** — Call `Manager::register()` in a service provider's `register()` method
-3. **Configure it** — Add the configuration with your driver name
-
-```php
-// In your service provider
-public function register(): void
-{
-    IdentityResolverManager::register('jwt', function ($app, $config, $name) {
-        return new JwtIdentityResolver(
-            $name,
-            $config['secret'],
-            $config['claim'] ?? 'tenant_id'
-        );
-    });
-}
-```
-
-```php
-// In config/multitenancy.php
-'resolvers' => [
-    'jwt' => [
-        'driver' => 'jwt',
-        'secret' => env('JWT_SECRET'),
-        'claim' => 'org_id',
-    ],
-],
-```
-
-## ServiceOverrideManager Differences
-
-The `ServiceOverrideManager` doesn't extend `BaseFactory` because overrides have different lifecycle requirements:
-
-- Overrides are **setup and cleaned up** during tenant context changes
-- They may be **bootable** (need to run after all overrides are registered)
-- They operate on the **service container** rather than being simple instances
-
-See [Service Overrides](./service-overrides.md) for details on how overrides work.
+Each package calls the appropriate `Manager::register()` method in its service provider, making its drivers available
+through standard configuration.
 
 ## Related Documents
 
 - [Tenancy](./tenancy.md) — What TenancyManager creates
 - [Tenant Providers](./tenant-providers.md) — What TenantProviderManager creates
 - [Identity Resolvers](./identity-resolvers.md) — What IdentityResolverManager creates
-- [Service Overrides](./service-overrides.md) — How ServiceOverrideManager differs
+- [Service Overrides](./service-overrides.md) — What ServiceOverrideManager creates

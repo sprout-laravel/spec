@@ -201,10 +201,37 @@ override changes it to work another way. Choose one approach per service.
 When you enable a conflicting combination, Sprout throws `CompatibilityException` at resolution time with a clear
 message about the conflict.
 
-## Route Configuration
+## Route Macros
 
-Routing resolvers need to configure routes. When you use `Route::tenanted()`, Sprout calls each resolver's
-`configureRoute()` method.
+Sprout provides two route macros that handle resolver configuration automatically:
+
+```php
+Route::tenanted(function () {
+    Route::get('/dashboard', DashboardController::class);
+}, 'subdomain', 'tenants');
+
+Route::possiblyTenanted(function () {
+    Route::get('/about', AboutController::class);
+}, 'header', 'tenants');
+```
+
+**`Route::tenanted()`** creates routes that require a tenant. Requests without a tenant throw `NoTenantFoundException`.
+
+**`Route::possiblyTenanted()`** creates routes where tenants are optional. Resolution is attempted, but requests proceed
+even without a tenant.
+
+Both accept optional resolver and tenancy names. When omitted, they use configured defaults.
+
+These macros orchestrate several operations internally:
+
+1. Get the resolver and [tenancy](./tenancy.md) from their managers
+2. Call the resolver's `configureRoute()` to apply constraints (domains, prefixes)
+3. Add Sprout's middleware with parameters encoding the resolver and tenancy
+4. Execute the route closure within the configured group
+
+### How configureRoute() Works
+
+Routing resolvers configure routes via the `configureRoute()` method.
 
 The subdomain resolver adds a domain constraint:
 
@@ -222,7 +249,37 @@ $route->prefix('{tenant}');
 
 Both also apply regex pattern constraints if configured, ensuring the tenant parameter matches expected formats.
 
-Non-routing resolvers don't configure routes — they have nothing to add.
+Non-routing resolvers don't modify route matching — they extract identifiers from request metadata, not URL structure.
+However, the header resolver adds response middleware to echo the resolved tenant identifier back in response headers,
+useful for debugging and client verification.
+
+### Dynamic Parameter Names
+
+Routing resolvers face a naming collision problem. What if two tenancies both use subdomain resolution? Both would need
+a `{tenant}` parameter.
+
+Sprout solves this with dynamic parameter names using [placeholders](#placeholders), following the pattern
+`{tenancy}_{resolver}`:
+
+- Default tenancy with subdomain resolver: `{tenants_subdomain}`
+- Organizations tenancy with path resolver: `{organizations_path}`
+
+This is transparent to your application. Each resolver provides a `route()` helper that generates URLs with the correct
+parameter name.
+
+### Multiple Tenancies
+
+A route can participate in multiple [tenancies](./tenancy.md):
+
+```php
+Route::tenanted(function () {
+    Route::tenanted(function () {
+        // Both organization AND team context
+    }, 'path', 'teams');
+}, 'subdomain', 'organizations');
+```
+
+Each tenancy resolves independently. The dynamic parameter naming prevents URL collisions.
 
 ## URL Generation
 
@@ -362,6 +419,12 @@ combinations. The error happens when resolution is attempted. Check your configu
 **Resolvers don't validate tenants.** A resolver returns whatever identifier it finds. If that identifier doesn't
 correspond to a real tenant, the [provider](./tenant-providers.md) returns null, and the [tenancy](./tenancy.md) ends up without a tenant. Validation is the
 application's responsibility.
+
+**Route caching works normally.** The route macros generate standard Laravel route definitions, so route caching
+requires no special handling.
+
+**Fallback resolution for edge cases.** Routing resolvers prefer route parameters but fall back to parsing the request
+directly. This handles error pages and routes outside tenanted groups where the parameter wasn't captured.
 
 ## Related Documents
 
