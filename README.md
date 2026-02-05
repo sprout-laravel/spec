@@ -18,6 +18,7 @@ concepts, design rationale, and how parts of the system relate to each other.
 | [Service Overrides](./architecture/service-overrides.md)   | Making Laravel services tenant-aware          |
 | [Eloquent Integration](./architecture/eloquent-integration.md) | Tenant-aware models and automatic scoping |
 | [Managers & Factories](./architecture/managers-factories.md) | Driver-based factory pattern for extensibility |
+| [Exceptions](./architecture/exceptions.md)                     | Error handling and exception hierarchy |
 
 #### Component Documentation
 
