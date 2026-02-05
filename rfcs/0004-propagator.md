@@ -72,6 +72,16 @@ php artisan sprout:list --resolvers
 php artisan sprout:list --overrides
 ```
 
+### Telescope Integration
+
+When Laravel Telescope is detected, Propagator integrates with it to make the various collectors tenant-aware. This allows developers to filter and view Telescope entries by tenant, providing better visibility into tenant-specific behaviour during development.
+
+The integration hooks into Telescope's watchers to:
+
+- Tag entries with the current tenant identifier
+- Add tenant context to request, job, query, and other recorded entries
+- Enable filtering the Telescope UI by tenant
+
 ## Drawbacks
 
 - **Additional package** — Another package to maintain, even if lightweight
@@ -93,3 +103,4 @@ php artisan sprout:list --overrides
 1. Create separate repository with package structure and service provider
 2. Implement make commands with stub files
 3. Implement `sprout:list` command
+4. Implement Telescope integration (conditional on Telescope being installed)
