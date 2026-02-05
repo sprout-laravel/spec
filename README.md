@@ -37,6 +37,7 @@ discuss and evaluate proposals before implementation.
 - [RFC-0001: Seedling — Multi-Database Support](./rfcs/0001-seedling.md) — Multi-database support
 - [RFC-0002: Canopy — Domain-Based Tenant Identification](./rfcs/0002-canopy.md) — Domain-based tenant identification
 - [RFC-0003: Stacked Identity Resolution](./rfcs/0003-stacked-identity-resolution.md) — Stacked Identity Resolution
+- [RFC-0004: Propagator — Developer Toolkit](./rfcs/0004-propagator.md) — Developer toolkit
 - [Index](./rfcs/README.md) — List of all RFCs and their status
 
 ### [ADRs](./adrs/)
