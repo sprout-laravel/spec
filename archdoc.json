@@ -1,0 +1,7 @@
+{
+  "name": "Sprout for Laravel",
+  "branch": "main",
+  "root": ".",
+  "strict": false,
+  "ref_stale_days": 180
+}
