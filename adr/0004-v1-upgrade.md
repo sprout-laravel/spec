@@ -1,9 +1,9 @@
 ---
 id: ADR-0004
 title: Upgrade from v1 with a guide and Rector rules
-status: proposed
+status: accepted
 created: 2026-10-03
-decided:
+decided: 2026-10-03
 depends: []
 updates: []
 obsoletes: []
