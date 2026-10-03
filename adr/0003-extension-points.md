@@ -1,9 +1,9 @@
 ---
 id: ADR-0003
 title: Keep extension points stable within a major version
-status: proposed
+status: accepted
 created: 2026-10-03
-decided:
+decided: 2026-10-03
 depends: []
 updates: []
 obsoletes: []
