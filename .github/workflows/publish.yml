@@ -1,0 +1,67 @@
+name: Publish the specification
+
+on:
+  workflow_run:
+    workflows: [archdoc lint]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+# Unlike the lint workflow, this one writes: it creates a release.
+permissions:
+  contents: write
+
+# One at a time, and never cancelled. Two pushes landing together would race to
+# create their tags, and cancelling the earlier one would lose the release for
+# a commit that is already on main.
+concurrency:
+  group: publish-the-specification
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish the export
+    runs-on: ubuntu-latest
+    # Nothing is published from a specification that did not pass. A manual run
+    # carries no workflow_run payload, so its conclusion is empty and it is
+    # admitted here, then linted as a step of its own below.
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    steps:
+      # A workflow_run job checks out the default branch, not the commit that
+      # triggered it, so the commit is named explicitly. Without this, a later
+      # push could have moved main and the export would come from a commit that
+      # was never linted.
+      #
+      # Export reads the working tree rather than history, so a shallow
+      # checkout would do. The full history is fetched anyway, so that this job
+      # sees the repository exactly as the lint job does and nothing breaks if
+      # the export ever derives anything from git.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 0
+
+      # Pinned, and raised together with the pin in archdoc-lint.yml. The two
+      # must not drift: the version decides the shape of what is generated,
+      # and a mismatch is invisible locally. The export step below deliberately
+      # names no version, so it uses the binary this step installs rather than
+      # laying a second one over it.
+      - uses: archdochq/setup@v1.0.0
+
+      # Only on a manual run. The chained path is already gated on the lint
+      # workflow having passed for this commit, and repeating it there would
+      # put the checks in two places to drift apart.
+      - name: Lint
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          archdoc lint
+          archdoc index --check
+          archdoc glossary --check
+
+      - name: Publish the specification
+        id: export
+        uses: archdochq/export@v1.0.0
+        with:
+          source: true
+          commit: ${{ github.event.workflow_run.head_sha || github.sha }}
+          publish-token: ${{ secrets.ARCHDOCDEV_TOKEN }}
