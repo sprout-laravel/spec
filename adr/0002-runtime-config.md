@@ -1,9 +1,9 @@
 ---
 id: ADR-0002
 title: Never rewrite configuration at runtime
-status: proposed
+status: accepted
 created: 2026-10-03
-decided:
+decided: 2026-10-03
 depends: []
 updates: []
 obsoletes: []
