@@ -10,6 +10,10 @@ The tenant a unit of work is currently working for within a tenancy. A unit of w
 
 A tenant nested beneath another tenant, its parent, such as a customer beneath the reseller that resells to it.
 
+## Extension point
+
+A part of Sprout that applications and third-party packages are intended to build on, such as an interface they implement or a method they use to register an implementation.
+
 ## Per-tenant configuration
 
 Configuration that belongs to a single tenant, such as its own database connection, mailer or storage disk, used in place of the application's own configuration while that tenant is active.
