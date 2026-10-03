@@ -1,9 +1,9 @@
 ---
 id: ADR-0001
 title: Never replace the active tenant
-status: proposed
+status: accepted
 created: 2026-10-03
-decided:
+decided: 2026-10-03
 depends: []
 updates: []
 obsoletes: []
