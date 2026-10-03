@@ -10,6 +10,10 @@ The tenant a unit of work is currently working for within a tenancy. A unit of w
 
 A tenant nested beneath another tenant, its parent, such as a customer beneath the reseller that resells to it.
 
+## Per-tenant configuration
+
+Configuration that belongs to a single tenant, such as its own database connection, mailer or storage disk, used in place of the application's own configuration while that tenant is active.
+
 ## Tenancy
 
 A type of tenant within an application, such as organisations, or the stores within an organisation. An application can have several tenancies, each with its own tenants.
