@@ -1,9 +1,9 @@
 ---
 id: ADR-0006
 title: Make a tenant active only by entering it
-status: proposed
+status: accepted
 created: 2026-10-18
-decided:
+decided: 2026-10-18
 depends: []
 updates: []
 obsoletes: []
