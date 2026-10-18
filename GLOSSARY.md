@@ -30,6 +30,10 @@ The context of a unit of work that runs outside multitenancy.
 
 Working out from a request which tenant it belongs to.
 
+## Leaving
+
+The operation that makes an active tenant inactive and puts back the state from before it was entered.
+
 ## No-tenant context
 
 The context of a unit of work, for a tenancy with no active tenant, when it runs as work that can run with or without a tenant.
@@ -41,6 +45,10 @@ Configuration that belongs to a single tenant, such as its own database connecti
 ## Restoration
 
 Working out, when deferred work such as a queued job runs, which tenant it was dispatched for.
+
+## Stale state
+
+What remains, when a unit of work starts, of a tenant from a unit of work that has already finished: the tenant itself, if it is still active, or the part of its state that leaving did not put back.
 
 ## Tenancy
 
