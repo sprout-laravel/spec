@@ -1,9 +1,9 @@
 ---
 id: ADR-0009
 title: Refuse stale state and stop the process that finds it
-status: proposed
+status: accepted
 created: 2026-10-18
-decided:
+decided: 2026-10-18
 depends: [ADR-0001, ADR-0005]
 updates: []
 obsoletes: []
