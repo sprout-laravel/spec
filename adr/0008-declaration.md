@@ -1,9 +1,9 @@
 ---
 id: ADR-0008
 title: Treat work without a tenant as global or no-tenant only by declaration
-status: proposed
+status: accepted
 created: 2026-10-18
-decided:
+decided: 2026-10-18
 depends: [ADR-0005]
 updates: []
 obsoletes: []
