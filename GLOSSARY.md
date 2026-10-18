@@ -10,13 +10,25 @@ The tenant a unit of work is currently working for within a tenancy. A unit of w
 
 A tenant nested beneath another tenant, its parent, such as a customer beneath the reseller that resells to it.
 
+## Entering
+
+The operation that makes a tenant the active tenant of its tenancy.
+
 ## Extension point
 
 A part of Sprout that applications and third-party packages are intended to build on, such as an interface they implement or a method they use to register an implementation.
 
+## Identification
+
+Working out from a request which tenant it belongs to.
+
 ## Per-tenant configuration
 
 Configuration that belongs to a single tenant, such as its own database connection, mailer or storage disk, used in place of the application's own configuration while that tenant is active.
+
+## Restoration
+
+Working out, when deferred work such as a queued job runs, which tenant it was dispatched for.
 
 ## Tenancy
 
