@@ -10,6 +10,10 @@ The tenant a unit of work is currently working for within a tenancy. A unit of w
 
 A tenant nested beneath another tenant, its parent, such as a customer beneath the reseller that resells to it.
 
+## Declaration
+
+What a unit of work states about how multitenancy applies to it, such as that it works outside multitenancy, or that it can run with or without a tenant.
+
 ## Entering
 
 The operation that makes a tenant the active tenant of its tenancy.
@@ -18,9 +22,17 @@ The operation that makes a tenant the active tenant of its tenancy.
 
 A part of Sprout that applications and third-party packages are intended to build on, such as an interface they implement or a method they use to register an implementation.
 
+## Global context
+
+The context of a unit of work that runs outside multitenancy.
+
 ## Identification
 
 Working out from a request which tenant it belongs to.
+
+## No-tenant context
+
+The context of a unit of work, for a tenancy with no active tenant, when it runs as work that can run with or without a tenant.
 
 ## Per-tenant configuration
 
@@ -37,6 +49,10 @@ A type of tenant within an application, such as organisations, or the stores wit
 ## Tenant
 
 A customer, organisation or other party that an application serves alongside others, whose data and settings are kept apart from every other tenant's.
+
+## Tenant data
+
+Data that belongs to a tenancy, whether to one or more of its tenants, or to none in particular.
 
 ## Unit of work
 
