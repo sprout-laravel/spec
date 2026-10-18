@@ -1,9 +1,9 @@
 ---
 id: ADR-0005
 title: Provide mechanisms, not policy
-status: proposed
+status: accepted
 created: 2026-10-18
-decided:
+decided: 2026-10-18
 depends: []
 updates: []
 obsoletes: []
