@@ -1,9 +1,9 @@
 ---
 id: ADR-0007
 title: Bypass the application's refusal only explicitly
-status: proposed
+status: accepted
 created: 2026-10-18
-decided:
+decided: 2026-10-18
 depends: [ADR-0005, ADR-0006]
 updates: [ADR-0006]
 obsoletes: []
