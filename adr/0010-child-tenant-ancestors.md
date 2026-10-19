@@ -1,9 +1,9 @@
 ---
 id: ADR-0010
 title: Enter a child tenant only beneath its own ancestors
-status: proposed
+status: accepted
 created: 2026-10-18
-decided:
+decided: 2026-10-19
 depends: [ADR-0001, ADR-0005, ADR-0006, ADR-0007]
 updates: [ADR-0001, ADR-0007]
 obsoletes: []
