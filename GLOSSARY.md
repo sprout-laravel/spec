@@ -6,6 +6,10 @@
 
 The tenant a unit of work is currently working for within a tenancy. A unit of work has at most one active tenant for each tenancy.
 
+## Ancestor
+
+A tenant's parent, its parent's parent, and so on to a tenant with no parent.
+
 ## Child tenant
 
 A tenant nested beneath another tenant, its parent, such as a customer beneath the reseller that resells to it.
